@@ -1,6 +1,7 @@
 import React, { useRef } from 'react';
 import { Alert, Modal, Pressable, StyleSheet, Text, View } from 'react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
+import * as FileSystem from 'expo-file-system/legacy';
 
 type Props = { visible: boolean; kind: 'before' | 'after'; onClose: () => void; onCaptured: (uri: string) => Promise<void> };
 
@@ -11,7 +12,12 @@ export function CameraCapture({ visible, kind, onClose, onCaptured }: Props) {
   const takePicture = async () => {
     const photo = await camera.current?.takePictureAsync({ quality: 0.7 });
     if (!photo?.uri) return;
-    await onCaptured(photo.uri);
+    if (!FileSystem.documentDirectory) throw new Error('No se encontró almacenamiento permanente.');
+    const directory = `${FileSystem.documentDirectory}evidence/`;
+    await FileSystem.makeDirectoryAsync(directory, { intermediates: true });
+    const permanentUri = `${directory}${Date.now()}.jpg`;
+    await FileSystem.copyAsync({ from: photo.uri, to: permanentUri });
+    await onCaptured(permanentUri);
     onClose();
   };
 
