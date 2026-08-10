@@ -1,4 +1,5 @@
 {
   "extends": "expo/tsconfig.base",
-  "compilerOptions": { "strict": true, "noUncheckedIndexedAccess": true, "jsx": "react-jsx" }
+  "compilerOptions": { "strict": true, "noUncheckedIndexedAccess": true, "jsx": "react-jsx" },
+  "exclude": ["supabase/functions"]
 }

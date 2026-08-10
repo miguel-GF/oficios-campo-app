@@ -1,0 +1,22 @@
+project_id = "replace-with-your-project-ref"
+
+[functions.sync]
+verify_jwt = true
+
+[functions.bootstrap]
+verify_jwt = true
+
+[functions.evidence-upload]
+verify_jwt = true
+
+[functions.pull]
+verify_jwt = true
+
+[functions.interpret]
+verify_jwt = true
+
+[functions.account]
+verify_jwt = true
+
+[functions.entitlement]
+verify_jwt = true

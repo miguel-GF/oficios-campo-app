@@ -4,10 +4,11 @@
     "slug": "jale-oficios",
     "version": "0.1.0",
     "orientation": "portrait",
+    "scheme": "jale",
     "userInterfaceStyle": "light",
     "splash": { "backgroundColor": "#F7F5F0" },
     "plugins": [["expo-camera", { "cameraPermission": "Jale usa la cámara para guardar evidencia antes y después del servicio." }]],
-    "android": { "package": "mx.jale.app", "adaptiveIcon": { "backgroundColor": "#0E5E4A" } },
-    "ios": { "bundleIdentifier": "mx.jale.app", "supportsTablet": true }
+    "android": { "package": "mx.jale.app", "versionCode": 1, "adaptiveIcon": { "backgroundColor": "#0E5E4A" }, "permissions": ["CAMERA"] },
+    "ios": { "bundleIdentifier": "mx.jale.app", "buildNumber": "1", "supportsTablet": true, "infoPlist": { "NSCameraUsageDescription": "Jale usa la cámara para guardar evidencia antes y después del servicio." } }
   }
 }

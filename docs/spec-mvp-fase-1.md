@@ -4,6 +4,8 @@
 
 > Este documento preserva como referencia canónica inicial la especificación entregada para construir Jale. Los cambios de alcance posteriores deben registrarse mediante ADR o una nueva versión, no modificando silenciosamente estos principios.
 
+Decisión posterior aplicable: [`ADR 0001 — Modelo comercial y control de cobros`](adr/0001-modelo-comercial-y-control-de-cobros.md).
+
 ## 1. Visión y principios
 
 Herramienta móvil, voice-first y offline-first para técnicos de oficios a domicilio: fumigadores, técnicos de A/C, plomeros, electricistas e instaladores. Reemplaza al cuaderno y WhatsApp; no compite con ERPs.
