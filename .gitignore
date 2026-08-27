@@ -1,6 +1,9 @@
 node_modules/
 .expo/
+android/
+ios/
 dist/
+dist-*/
 .test-build/
 *.log
 .DS_Store

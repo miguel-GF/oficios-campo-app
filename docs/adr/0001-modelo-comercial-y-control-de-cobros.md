@@ -1,5 +1,7 @@
 # ADR 0001 — Modelo comercial y control de cobros
 
+> Reemplazado para el lanzamiento inicial por [ADR 0002](0002-mvp-offline-y-suscripcion-play.md).
+
 - **Estado:** aceptado
 - **Fecha:** 3 de agosto de 2026
 - **Alcance:** lanzamiento de Fase 1
