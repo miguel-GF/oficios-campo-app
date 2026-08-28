@@ -39,6 +39,9 @@ module.exports = function withJaleAndroidBackup(config) {
         `allprojects {\n  configurations.configureEach {\n    resolutionStrategy.force 'org.jetbrains.kotlin:kotlin-stdlib:${KOTLIN_VERSION}'\n    resolutionStrategy.force 'org.jetbrains.kotlin:kotlin-stdlib-jdk7:${KOTLIN_VERSION}'\n    resolutionStrategy.force 'org.jetbrains.kotlin:kotlin-stdlib-jdk8:${KOTLIN_VERSION}'\n  }`,
       );
     }
+    if (!current.modResults.contents.includes('Xskip-metadata-version-check')) {
+      current.modResults.contents += `\nsubprojects {\n  tasks.withType(org.jetbrains.kotlin.gradle.tasks.KotlinCompile).configureEach {\n    compilerOptions.freeCompilerArgs.add('-Xskip-metadata-version-check')\n  }\n}\n`;
+    }
     return current;
   });
   config = withAndroidManifest(config, current => {
