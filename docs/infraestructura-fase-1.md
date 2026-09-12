@@ -1,27 +1,24 @@
 # Infraestructura del lanzamiento offline
 
-## Aplicación
+## Aplicacion
 
-El MVP usa Expo 57, React Native, TypeScript y SQLite. Los PDF se renderizan en el dispositivo y se comparten mediante Android. No existe API propia, base de datos remota ni secreto de servidor.
+Jale usa Flutter y Dart con SQLite local. Los PDF se renderizan en el dispositivo y se comparten mediante Android. La IA y la cuenta son opcionales: el APK nunca contiene la clave de OpenAI ni credenciales de Google Play.
 
-Android Auto Backup incluye únicamente la base SQLite y `files/branding/`. SecureStore queda fuera del respaldo automático. Además, la app exporta archivos `.jale-backup` cifrados con AES-256-GCM y una clave derivada de la contraseña; la contraseña nunca se almacena.
+La base `jale.db` vive en el directorio de documentos de la aplicacion. Los respaldos manuales usan archivos `.jale-backup` cifrados con AES-256-GCM y una clave derivada de la contrasena mediante PBKDF2-SHA256; la contrasena nunca se almacena.
 
-## Distribución y cobro
+## Distribucion y cobro
 
-Usar EAS para APK de beta y AAB de producción. El proyecto fija NDK 28.2.13676358 para reproducir builds en máquinas con el Android SDK ya instalado. Play Console debe contener:
+Usar los comandos de Flutter para generar APK de prueba y AAB de produccion. La aplicacion es `mx.jale.app`; Google Play debe contener la suscripcion `jale_pro` con planes renovables `monthly` y `yearly`.
 
-- aplicación `mx.jale.app`;
-- suscripción `jale_pro`;
-- planes base renovables `monthly` y `yearly`;
-- pista de prueba con cuentas licenciadas para validar compra, restauración, cancelación y operación sin red.
+Google Play Billing se verifica en FastAPI antes de activar Pro y queda ligado a la cuenta de Jale. Supabase conserva cuotas, derechos y auditoría mínima; clientes, cotizaciones y pagos del trabajador siguen en SQLite. Si Play no está disponible, se conserva como máximo tres días el último derecho verificado. Cloudflare Worker oculta el origen y añade el secreto de origen; Play Integrity se exige en producción.
 
-No se deben probar compras con Expo Go. La verificación local es una concesión explícita para la primera versión sin servidor. Antes de incorporar IA, sincronización o compras consumibles, agregar identidad recuperable y validación de compras en backend.
-
-## Lista previa a publicación
+## Lista previa a publicacion
 
 - Sustituir icono y arte de tienda definitivos.
-- Completar datos del responsable y URL pública de privacidad.
-- Ejecutar `npm run typecheck`, `npm test` y una compilación Android limpia.
-- Probar creación, cierre forzado, PDF, compartir, cambio de mes, pagos parciales, anulaciones, respaldo/restauración y pérdida de red.
-- Confirmar precios y textos de renovación en Play Console.
+- Completar datos del responsable y URL publica de privacidad.
+- Ejecutar `flutter analyze`, `flutter test` y una compilacion Android limpia.
+- Probar creacion, cierre forzado, PDF, compartir, cambio de mes, pagos parciales, anulaciones, respaldo/restauracion y perdida de red.
+- Confirmar precios y textos de renovacion en Play Console.
 - Conservar un respaldo cifrado de prueba y verificarlo en otro dispositivo.
+- Ejecutar migración SQL de Supabase y configurar secretos en Cloud Run; activar `REQUIRE_PLAY_INTEGRITY=true`.
+- Probar desde el APK oficial la cuota 1 IA → correo + 2 IA → 3 manuales iniciales → 2 IA + 4 manuales en el siguiente periodo.

@@ -6,10 +6,10 @@
 
 ## Decisión
 
-Lanzar Jale sin cuenta ni backend. SQLite será la fuente de verdad, con Auto Backup de Android y respaldo manual cifrado. El plan Gratis permitirá tres documentos finalizados por mes. Jale Pro se venderá como una suscripción de Google Play con planes mensual y anual, provisionalmente a $89 y $799 MXN.
+Mantener SQLite como fuente de verdad del trabajo y lanzar la cuenta como una capacidad opcional del MVP. El plan Gratis usa 1 IA de invitado, 2 IA de bienvenida tras correo, 3 manuales en el primer periodo y 2 IA + 4 manuales después. Jale Pro se vende como suscripción de Google Play; el backend verifica y liga el derecho a la cuenta.
 
-La primera versión no contiene IA. La futura captura por voz incluirá 100 interpretaciones válidas mensuales en Pro; no se ofrecerá “voz ilimitada”. Los créditos adicionales no se implementarán hasta contar con identidad recuperable, verificación remota y demanda observada.
+La voz transcribe en el dispositivo y `gpt-5.6-luna` convierte el texto en salida estructurada revisable. Pro se comunica como IA sin límite visible con una barrera técnica de uso razonable. Cloudflare protege el origen, Supabase lleva cuotas/auditoría y Play Integrity protege el cuerpo de cada petición en producción. Los respaldos remotos solo se considerarán como blobs ya cifrados y con consentimiento explícito.
 
 ## Consecuencias
 
-La app funciona en campo sin señal, cuesta poco operar y evita fricción de registro. La contrapartida es que el respaldo entre plataformas, la recuperación de derechos y la validación robusta de compras quedan limitados. Introducir sincronización, IA o consumibles exige una migración explícita y no debe comprometer la base local existente.
+La app funciona en campo sin señal y evita fricción de registro; los datos de clientes siguen locales. La contrapartida es que las cuotas IA y los derechos Pro requieren internet, y una cuenta para recuperarlos. Introducir sincronización o consumibles exige evidencia de demanda y no debe comprometer la base local existente.

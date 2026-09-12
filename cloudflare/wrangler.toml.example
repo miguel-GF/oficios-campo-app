@@ -1,0 +1,26 @@
+name = "jale-api"
+main = "worker.js"
+compatibility_date = "2026-09-01"
+workers_dev = true
+
+[vars]
+ORIGIN_URL = "https://your-cloud-run-service.run.app"
+
+# Add ORIGIN_VERIFY_SECRET with: npx wrangler secret put ORIGIN_VERIFY_SECRET
+
+# Requires a positive integer unique in your Cloudflare account.
+[[ratelimits]]
+name = "AI_RATE_LIMITER"
+namespace_id = "1001"
+
+[ratelimits.simple]
+limit = 30
+period = 60
+
+[[ratelimits]]
+name = "AI_IP_RATE_LIMITER"
+namespace_id = "1002"
+
+[ratelimits.simple]
+limit = 120
+period = 60

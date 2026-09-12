@@ -1,29 +1,35 @@
-# Plan de evolución de Jale
+# Roadmap de Jale
 
-Este documento convierte el MVP en un producto validable sin adelantar costes de servidor ni obligar a los primeros usuarios a crear una cuenta.
+## Ahora — MVP innovador
 
-## Fase 0 — Base entregada
+El producto base ya cubre el ciclo completo: crear por voz o manualmente, revisar, cotizar, compartir, registrar aceptación, cobrar por abonos y ver el avance semanal o mensual. La IA usa precios dictados; nunca inventa un precio silenciosamente. SQLite conserva el trabajo aun sin señal, mientras el backend solo administra identidad, cuotas y la suscripción.
 
-Android offline-first: negocio, clientes, cotizaciones, PDF, aceptación, pagos, recibos, SQLite, Auto Backup, respaldo cifrado y suscripción Play. Criterio: `typecheck`, pruebas, bundle Android y prebuild correctos.
+Puerta de salida: análisis y pruebas verdes, APK instalable, configuración de producción documentada y cero errores bloqueantes conocidos.
 
-## Fase 1 — Beta cerrada (2 semanas)
+## Siguiente — Beta cerrada (10 trabajadores, 2 semanas)
 
-Probar con 10 trabajadores de oficios. Medir manualmente tiempo hasta la primera cotización, documentos compartidos, errores de restauración, fallos de PDF y conversaciones de pago. No añadir analítica SDK. Corregir cualquier pérdida de datos o bloqueo antes de abrir la pista de producción.
+Medir con entrevistas y observación:
 
-## Fase 2 — Lanzamiento offline
+- tiempo hasta la primera cotización compartida;
+- porcentaje de dictados aceptados sin editar y campos que más se corrigen;
+- cotizaciones aceptadas y dinero recuperado con seguimiento;
+- fallos de micrófono, PDF, restauración y dispositivos de gama baja;
+- conversión después del crédito gratis y disposición a pagar.
 
-Publicar APK/AAB con `jale_pro`, planes `monthly` y `yearly`, textos de renovación, política de privacidad y soporte. Usar como referencia $89 MXN/mes y $799 MXN/año; ajustar solo con evidencia de conversión y retención. Mantener la cuota Gratis en tres documentos finalizados al mes.
+Primero se corrige cualquier riesgo de pérdida de datos, cobro incorrecto o bloqueo. No se agrega analítica invasiva al APK; el backend ya permite contar consumo técnico sin almacenar el texto completo.
 
-## Fase 3 — Voz como incremento
+## Después — Lanzamiento en Play
 
-Primero añadir dictado del teclado o reconocimiento del dispositivo. Después enviar únicamente texto a un proveedor de interpretación para convertirlo en conceptos, cantidades y precios con vista previa y confirmación. En Pro incluir 100 interpretaciones válidas por mes; una corrección o intento fallido no debe gastar crédito. Registrar localmente el contador y explicar cuándo se reinicia.
+Configurar Supabase, Cloud Run, Cloudflare, dominio, Play Billing, RTDN y Play Integrity. Completar ficha, capturas, política de privacidad, Data Safety, pruebas cerradas exigidas por Google y soporte. El precio se decide con la beta; no se codifica en la app y siempre se muestra el precio localizado que devuelve Play.
 
-No ofrecer voz ilimitada. Evaluar paquetes de 100 créditos por $29 MXN solo si al menos 5% de usuarios Pro alcanza el límite durante dos meses consecutivos, existe soporte para cobro y hay una identidad recuperable para evitar abuso y restaurar créditos.
+## Evolución — Recuperación y colaboración
 
-## Fase 4 — Identidad y migración opcionales
+Prioridad recomendada:
 
-Antes de sincronizar, introducir cuenta opcional, vincularla con un código de migración y subir primero un respaldo cifrado validado. Conservar SQLite como caché y permitir exportar los datos. Migrar derechos de Play y créditos a un servidor con verificación de tokens; nunca exigir cuenta para abrir datos existentes.
+1. respaldo remoto opt-in de un blob ya cifrado en el teléfono;
+2. restauración en un teléfono nuevo y control de versiones/espacio;
+3. agenda y recordatorios de seguimiento;
+4. sincronización multi-dispositivo solo si los usuarios realmente la piden;
+5. catálogo asistido por oficio a partir de datos propios, sin compartir datos identificables entre usuarios.
 
-## Puertas de decisión
-
-Cada fase requiere estabilidad del flujo principal, evidencia de uso y una estrategia reversible. Si la voz no reduce tiempo o aumenta conversiones, permanecer en el modo manual offline. Si la sincronización no resuelve una necesidad clara, mantener el producto local y no asumir costes de infraestructura.
+No se debe convertir Jale en procesador de pagos ni CFDI dentro de este alcance. Los abonos registrados son control del trabajador; los únicos pagos procesados por la plataforma son las suscripciones de Google Play.

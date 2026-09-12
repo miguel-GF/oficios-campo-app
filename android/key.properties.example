@@ -1,0 +1,5 @@
+# Copia este archivo como android/key.properties y no lo subas a Git.
+storePassword=CAMBIA_ESTA_CONTRASENA
+keyPassword=CAMBIA_ESTA_CONTRASENA
+keyAlias=jale-upload
+storeFile=C:/ruta/segura/jale-upload.jks
