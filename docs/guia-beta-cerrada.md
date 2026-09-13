@@ -1,99 +1,43 @@
-# Guía operativa de beta cerrada
+# Guía de lanzamiento
 
-Esta guía activa la IA real sin poner secretos en Android. Ejecutar los comandos desde la raíz del repositorio y guardar los valores sensibles en el gestor de secretos correspondiente.
+## Neon
 
-## 1. Supabase
+1. Crear el proyecto Neon y habilitar Neon Auth.
+2. Aplicar backend/migrations/001_neon.sql sobre la rama de producción.
+3. Desplegar un portal HTTPS que use Neon Auth y cumpla el contrato de arquitectura-backend-beta.md.
+4. Guardar DATABASE_URL y AUTH_BRIDGE_SECRET sólo en el backend/portal.
 
-1. Crear un proyecto y activar Auth por correo con OTP.
-2. En SQL Editor ejecutar, en orden, las migraciones de `supabase/migrations/`.
-3. En la plantilla de correo mostrar el token con `{{ .Token }}`; Jale pide seis dígitos, no un enlace.
-4. Copiar `SUPABASE_URL` y `SUPABASE_ANON_KEY` solamente para el build de Flutter. La clave de servicio de Supabase, si se usa, vive únicamente en backend.
+## Stripe
 
-## 2. Gateway de IA y backend local
+1. Crear un producto Jale Pro con un precio recurrente mensual y otro anual, sin trial.
+2. Copiar sus IDs en STRIPE_MONTHLY_PRICE_ID y STRIPE_YEARLY_PRICE_ID.
+3. Configurar el webhook HTTPS /v1/billing/stripe/webhook.
+4. Suscribir customer.subscription.created, updated y deleted.
+5. Guardar claves Stripe en Secret Manager. Nunca se incluyen en Flutter.
 
-Configurar `backend/.env` a partir de `.env.example`. En la beta el backend de Oficios llama al adapter central; `AI_GATEWAY_TOKEN` debe ser el mismo secreto que `OFICIOS_INTERNAL_TOKEN` del Worker de Oficios:
+## IA central
 
-```text
-AI_BACKEND=gateway
-AI_GATEWAY_URL=https://oficios-ai-adapter.<subdominio>.workers.dev
-AI_GATEWAY_TOKEN=...
-AI_GATEWAY_TIMEOUT_SECONDS=25
-OPENAI_MODEL=gpt-5.6-luna
-DATABASE_URL=postgresql://...?sslmode=require
-SUPABASE_URL=https://...supabase.co
-SUPABASE_ANON_KEY=...
-INSTALLATION_PEPPER=un-secreto-aleatorio-de-32-o-mas-caracteres
-ORIGIN_VERIFY_SECRET=otro-secreto-aleatorio-de-32-o-mas-caracteres
-REQUIRE_ORIGIN_VERIFY=true
-REQUIRE_PLAY_INTEGRITY=true
-ENABLE_API_DOCS=false
-GOOGLE_PLAY_SERVICE_ACCOUNT_JSON={...}
-ANDROID_PACKAGE_NAME=mx.jale.app
-PLAY_PRODUCT_ID=jale_pro
-```
+En api-consumo-ia, aplicar migraciones D1, sustituir IDs de producción y cargar secretos con Wrangler:
 
-Verificar antes de desplegar:
+    npm.cmd run check
+    npm.cmd run build:production
+    npx wrangler secret put OPENAI_API_KEY -c wrangler.production.jsonc
+    npx wrangler secret put CF_AIG_TOKEN -c wrangler.production.jsonc
+    npx wrangler secret put INTERNAL_HMAC_SECRET -c wrangler.production.jsonc
+    npx wrangler secret put OFICIOS_INTERNAL_TOKEN -c consumer/oficios.production.wrangler.jsonc
 
-```powershell
-cd backend
-.venv\Scripts\python.exe -m pytest -q
-```
+OFICIOS_INTERNAL_TOKEN debe coincidir con AI_GATEWAY_TOKEN de FastAPI.
 
-## 3. Cloud Run
+## FastAPI y Cloudflare
 
-Crear una imagen y desplegarla con las variables del `.env` como secretos. El servicio puede ser público para que Cloudflare llegue a él, pero FastAPI rechaza toda mutación sin `X-Origin-Verify`.
+Crear backend/.env desde el ejemplo, desplegar el contenedor y configurar el Worker con ORIGIN_URL, ORIGIN_VERIFY_SECRET, AI_RATE_LIMITER y AI_IP_RATE_LIMITER. El webhook Stripe puede atravesar el Worker porque se valida con su firma propia.
 
-```bash
-gcloud builds submit backend --tag REGION-docker.pkg.dev/PROJECT/jale-api:beta
-gcloud run deploy jale-api --image REGION-docker.pkg.dev/PROJECT/jale-api:beta \
-  --region REGION --allow-unauthenticated --port 8080
-```
+## Integridad y firma
 
-No publiques `backend/.env` ni el JSON de Google Play. Crea los valores sensibles como secretos en Secret Manager y pásalos al servicio (los nombres a la izquierda son variables de entorno):
+Registrar directa mx.jale.app y Play mx.jale.app.play con sus certificados y códigos de versión. La directa acepta UNRECOGNIZED_VERSION sólo si paquete, certificado, versión, dispositivo y hash son correctos. Play exige además PLAY_RECOGNIZED y LICENSED.
 
-```bash
-gcloud run services update jale-api --region REGION \
-  --set-env-vars="AI_BACKEND=gateway,AI_GATEWAY_URL=https://oficios-ai-adapter.<subdominio>.workers.dev,AI_GATEWAY_TIMEOUT_SECONDS=25,REQUIRE_ORIGIN_VERIFY=true,REQUIRE_PLAY_INTEGRITY=true,ENABLE_API_DOCS=false,ANDROID_PACKAGE_NAME=mx.jale.app,PLAY_PRODUCT_ID=jale_pro" \
-  --set-secrets="AI_GATEWAY_TOKEN=jale-oficios-ai-token:latest,DATABASE_URL=jale-database-url:latest,SUPABASE_URL=jale-supabase-url:latest,SUPABASE_ANON_KEY=jale-supabase-anon:latest,INSTALLATION_PEPPER=jale-installation-pepper:latest,ORIGIN_VERIFY_SECRET=jale-origin-secret:latest,GOOGLE_PLAY_SERVICE_ACCOUNT_JSON=jale-play-service-account:latest"
-```
+Crear android/key.properties y el keystore fuera de Git. Generar primero APK directo firmado para Uptodown/descarga propia. El AAB Play no muestra compra Stripe.
 
-El primer despliegue y la actualización de variables son intencionalmente dos pasos: así la imagen queda separada de los secretos y rotarlos no requiere reconstruirla.
+## Aceptación
 
-`OPENAI_API_KEY` no es necesario en este modo. Para una migración temporal sin el gateway se puede usar `AI_BACKEND=openai` y la clave directa, pero esa configuración no debe llegar a la beta final.
-
-## 4. Cloudflare Worker
-
-Copiar `cloudflare/wrangler.toml.example` a `wrangler.toml`, poner la URL HTTPS de Cloud Run en `ORIGIN_URL` y desplegar:
-
-```bash
-cd cloudflare
-npx wrangler login
-npx wrangler secret put ORIGIN_VERIFY_SECRET
-npx wrangler deploy
-```
-
-La beta puede usar el subdominio gratuito `jale-api.<cuenta>.workers.dev`. El APK debe apuntar a esa URL, nunca a Cloud Run. Los bindings `AI_RATE_LIMITER` y `AI_IP_RATE_LIMITER` limitan instalación+IP e IP respectivamente.
-
-## 5. Google Play
-
-1. Crear la aplicación con paquete `mx.jale.app`.
-2. Crear la suscripción `jale_pro` con planes base `monthly` y `yearly`.
-3. Dar a la cuenta de servicio acceso a la API de Google Play.
-4. Configurar Play Integrity para el número de proyecto usado por `PLAY_INTEGRITY_CLOUD_PROJECT_NUMBER`.
-5. Crear un upload keystore privado y `android/key.properties` local; nunca subirlos al repositorio.
-
-## 6. Build de beta
-
-```bash
-flutter build apk --release \
-  --dart-define=JALE_API_URL=https://jale-api.<cuenta>.workers.dev \
-  --dart-define=SUPABASE_URL=https://<project>.supabase.co \
-  --dart-define=SUPABASE_ANON_KEY=<publishable-key> \
-  --dart-define=PLAY_INTEGRITY_CLOUD_PROJECT_NUMBER=<number>
-```
-
-El release solo está listo para Play cuando `apksigner verify` confirme la firma. Para desarrollo local sin Play Integrity se puede usar `REQUIRE_PLAY_INTEGRITY=false` en backend; nunca hacerlo en la beta distribuida por Play.
-
-## 7. Prueba de aceptación
-
-Probar con dos teléfonos reales: una IA anónima, registro por correo, dos IA de bienvenida, tres manuales del primer periodo, cambio de mes, cuatro manuales y dos IA; además compartir PDF, aceptar, abonar, anular pago, marcar no aceptada sin pagos y restaurar un respaldo cifrado.
+Probar en dos teléfonos: 1 IA invitado, login Neon, 2 IA mensuales, manuales ilimitadas, timeout y reintento con igual ID, alta/cancelación Stripe por webhook, tres días offline Pro, PDF, sobrepago rechazado, cierre forzado, borrado total y respaldo de más de 100 clientes.

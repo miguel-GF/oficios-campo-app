@@ -1,35 +1,17 @@
 # Roadmap de Jale
 
-## Ahora — MVP innovador
+## MVP
 
-El producto base ya cubre el ciclo completo: crear por voz o manualmente, revisar, cotizar, compartir, registrar aceptación, cobrar por abonos y ver el avance semanal o mensual. La IA usa precios dictados; nunca inventa un precio silenciosamente. SQLite conserva el trabajo aun sin señal, mientras el backend solo administra identidad, cuotas y la suscripción.
+Crear por voz o manual, revisar, compartir PDF, registrar aceptación y abonos, y ver actividad. La fuente de verdad operativa continúa local. La salida requiere pruebas verdes, APK directo firmado, infraestructura configurada y cero riesgos conocidos de pérdida o cobro incorrecto.
 
-Puerta de salida: análisis y pruebas verdes, APK instalable, configuración de producción documentada y cero errores bloqueantes conocidos.
+## Beta
 
-## Siguiente — Beta cerrada (10 trabajadores, 2 semanas)
+Medir tiempo hasta la primera cotización, correcciones a la IA, aceptación, recuperación de cobros, restauraciones y dispositivos de gama baja. Corregir primero cualquier pérdida de datos, sobrepago o consumo duplicado.
 
-Medir con entrevistas y observación:
+## Lanzamiento
 
-- tiempo hasta la primera cotización compartida;
-- porcentaje de dictados aceptados sin editar y campos que más se corrigen;
-- cotizaciones aceptadas y dinero recuperado con seguimiento;
-- fallos de micrófono, PDF, restauración y dispositivos de gama baja;
-- conversión después del crédito gratis y disposición a pagar.
+Publicar primero en Uptodown y descarga directa con Stripe. Preparar después el AAB Play como variante de consumo, sin compra externa. Evaluar Samsung Store sólo después de medir la beta y revisar de nuevo sus reglas vigentes.
 
-Primero se corrige cualquier riesgo de pérdida de datos, cobro incorrecto o bloqueo. No se agrega analítica invasiva al APK; el backend ya permite contar consumo técnico sin almacenar el texto completo.
+## Evolución
 
-## Después — Lanzamiento en Play
-
-Configurar Supabase, Cloud Run, Cloudflare, dominio, Play Billing, RTDN y Play Integrity. Completar ficha, capturas, política de privacidad, Data Safety, pruebas cerradas exigidas por Google y soporte. El precio se decide con la beta; no se codifica en la app y siempre se muestra el precio localizado que devuelve Play.
-
-## Evolución — Recuperación y colaboración
-
-Prioridad recomendada:
-
-1. respaldo remoto opt-in de un blob ya cifrado en el teléfono;
-2. restauración en un teléfono nuevo y control de versiones/espacio;
-3. agenda y recordatorios de seguimiento;
-4. sincronización multi-dispositivo solo si los usuarios realmente la piden;
-5. catálogo asistido por oficio a partir de datos propios, sin compartir datos identificables entre usuarios.
-
-No se debe convertir Jale en procesador de pagos ni CFDI dentro de este alcance. Los abonos registrados son control del trabajador; los únicos pagos procesados por la plataforma son las suscripciones de Google Play.
+Priorizar respaldo remoto opt-in de un blob ya cifrado, restauración en teléfono nuevo, recordatorios y, sólo si se solicita, sincronización multi-dispositivo. Jale no se convierte en procesador de pagos de trabajos ni en emisor de CFDI dentro de este alcance.

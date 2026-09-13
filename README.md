@@ -1,56 +1,39 @@
 # Jale
 
-App Android offline-first para trabajadores de oficio: cotizaciones profesionales por voz o captura manual, clientes, abonos, recibos no fiscales, PDF y seguimiento del dinero por cobrar.
+App Android offline-first para trabajadores de oficio. Crea cotizaciones, clientes, abonos y recibos no fiscales; genera PDF y controla saldos aun sin señal.
 
-## Qué incluye el MVP
+## Arquitectura
 
-- Flutter + Dart y SQLite local como fuente de verdad del trabajo.
-- Dictado en el dispositivo e interpretación estructurada con `gpt-5.6-luna`; el usuario siempre revisa antes de agregar conceptos.
-- Catálogo personal que recuerda conceptos y últimos precios.
-- Tablero semanal/mensual, búsqueda y filtros por estado de cobro.
-- Cuenta opcional por código al correo con Supabase Auth.
-- Suscripción `jale_pro` verificada en el backend con Google Play Billing.
-- Respaldo manual cifrado con AES-256-GCM; el respaldo automatico de Android esta desactivado y el servidor no almacena clientes ni cotizaciones en el MVP.
-- FastAPI + Postgres para cuentas, cuotas, derechos Pro y auditoría de pagos de suscripción.
-- Cloudflare Worker como entrada pública y Play Integrity para solicitudes de producción.
+- Flutter 3.44.8 y SQLite v7 mantienen en el teléfono el negocio, clientes, catálogo, cotizaciones y pagos.
+- El dictado se transcribe en el dispositivo. FastAPI reserva la cuota y llama al adapter Oficios del gateway central.
+- Neon Auth vive en un portal web. La app usa navegador, PKCE y sesiones móviles opacas de 15 minutos con refresh rotatorio de 30 días.
+- Neon Postgres conserva identidad, sesiones, derecho Pro, cuota y auditoría técnica. No sincroniza los datos de trabajo.
+- Stripe Checkout vende Jale Pro mensual o anual en la distribución directa. Sólo un webhook firmado activa o revoca Pro.
+- Play Integrity valida paquete, certificado, versión, dispositivo y hash de la solicitud.
+- El gateway central guarda durante 24 horas la salida de IA asociada al request_id para recuperar reintentos sin otra llamada ni otro consumo.
 
-## Cuotas
+## Modelo comercial
 
-- Sin cuenta: 1 cotización con IA y 3 cotizaciones manuales durante el primer periodo.
-- Al registrar correo: 2 créditos IA de bienvenida.
-- Meses posteriores: 2 cotizaciones IA y 4 manuales por mes.
-- Pro: IA sin límite visible, con barrera técnica de uso razonable para detectar abuso; las cotizaciones manuales no se limitan.
-- Los intentos fallidos de IA y los recibos de pagos existentes no consumen cuota.
+- Cotizaciones manuales ilimitadas, con o sin cuenta.
+- Invitado: un uso de IA durante la vida de la instalación.
+- Cuenta gratuita: dos usos de IA por mes.
+- Pro: IA sin límite visible, con barrera técnica de 500 usos mensuales para revisión de abuso.
+- No hay prueba Pro de 15 días.
+- Stripe sólo cobra la suscripción. Los abonos que el trabajador registra de sus clientes son datos locales; Jale no procesa esos cobros.
 
 ## Desarrollo
 
-```bash
-flutter pub get
-flutter analyze
-flutter test
-flutter run
-```
+    fvm flutter pub get
+    fvm flutter analyze
+    fvm flutter test
+    backend\.venv\Scripts\python.exe -m pytest -q backend
 
-Backend:
+Build directo para Uptodown o descarga propia:
 
-```bash
-cd backend
-python -m venv .venv
-.venv/Scripts/pip install -r requirements.txt -r requirements-dev.txt
-.venv/Scripts/python -m pytest
-uvicorn app.main:app --reload
-```
+    fvm flutter build apk --release --flavor direct --dart-define=JALE_DISTRIBUTION=direct --dart-define=JALE_API_URL=https://api.jale.mx --dart-define=JALE_AUTH_PORTAL_URL=https://auth.jale.mx/mobile --dart-define=PLAY_INTEGRITY_CLOUD_PROJECT_NUMBER=123456789
 
-La integración remota se configura sin incluir secretos en el APK:
+Build de Google Play, sólo para consumir un derecho Pro ya activo:
 
-```bash
-flutter run \
-  --dart-define=JALE_API_URL=https://api.example.com \
-  --dart-define=SUPABASE_URL=https://project.supabase.co \
-  --dart-define=SUPABASE_ANON_KEY=... \
-  --dart-define=PLAY_INTEGRITY_CLOUD_PROJECT_NUMBER=123456789
-```
+    fvm flutter build appbundle --release --flavor play --dart-define=JALE_DISTRIBUTION=play --dart-define=JALE_API_URL=https://api.jale.mx --dart-define=JALE_AUTH_PORTAL_URL=https://auth.jale.mx/mobile --dart-define=PLAY_INTEGRITY_CLOUD_PROJECT_NUMBER=123456789
 
-Para publicar se necesita `android/key.properties` y un upload keystore privado (ambos ignorados por Git), configurar `jale_pro` con planes `monthly` y `yearly` en Play Console, aplicar la migración de Supabase y activar Play Integrity.
-
-Consulta la [especificación del MVP](docs/spec-mvp-fase-1.md), la [guía de beta cerrada](docs/guia-beta-cerrada.md), la [arquitectura del backend](docs/arquitectura-backend-beta.md), el [plan de evolución](docs/plan-evolucion.md) y la [política de privacidad](docs/politica-de-privacidad.md).
+La variante Play usa mx.jale.app.play y no presenta botones ni enlaces de compra de Stripe. La directa usa mx.jale.app. Para activar servicios reales faltan las credenciales descritas en la guía de lanzamiento. El código, migraciones, mocks y pruebas funcionan sin ellas.
