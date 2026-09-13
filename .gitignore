@@ -23,3 +23,6 @@ backend/.pytest_cache/
 backend/app/__pycache__/
 backend/tests/__pycache__/
 *.pyc
+
+# FVM Version Cache
+.fvm/

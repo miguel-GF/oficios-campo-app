@@ -1,8 +1,10 @@
 import 'dart:io';
 import 'package:file_picker/file_picker.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:path/path.dart' as path;
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sqflite/sqflite.dart';
 import 'backup_format.dart';
 import 'database.dart';
@@ -41,4 +43,15 @@ Future<BackupSnapshot?> importEncryptedBackup(
   );
   await importSnapshot(db, snapshot);
   return snapshot;
+}
+
+Future<void> deleteAllDeviceData(Database db) async {
+  await deleteAllLocalData(db);
+  const secureStorage = FlutterSecureStorage();
+  await secureStorage.deleteAll();
+  final preferences = await SharedPreferences.getInstance();
+  await preferences.clear();
+  final documents = await getApplicationDocumentsDirectory();
+  final branding = Directory(path.join(documents.path, 'branding'));
+  if (await branding.exists()) await branding.delete(recursive: true);
 }

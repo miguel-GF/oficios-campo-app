@@ -555,7 +555,7 @@ class AppHeader extends StatelessWidget {
             ),
           ),
           Chip(
-            label: Text(isPro ? 'PRO' : '${usage.remaining} GRATIS'),
+            label: Text(isPro ? 'PRO' : 'MANUAL ∞'),
             backgroundColor: isPro
                 ? colors.tertiaryContainer
                 : colors.secondaryContainer,
@@ -1116,7 +1116,7 @@ class _HomePageState extends State<HomePage> {
             child: ListTile(
               onTap: widget.showPro,
               title: Text(
-                '${widget.usage.used} de ${widget.usage.limit} cotizaciones manuales usadas',
+                '${widget.usage.used} cotizaciones manuales este mes · sin límite',
               ),
               trailing: const Text('Ver Pro'),
             ),
@@ -1365,6 +1365,8 @@ class _QuotePageState extends State<QuotePage> with WidgetsBindingObserver {
   String? error;
   Timer? timer;
   bool closing = false;
+  bool finishing = false;
+  Future<void> _writeQueue = Future.value();
   @override
   void initState() {
     super.initState();
@@ -1380,7 +1382,7 @@ class _QuotePageState extends State<QuotePage> with WidgetsBindingObserver {
       final value = quote;
       if (value != null) {
         timer?.cancel();
-        unawaited(saveDraft(value));
+        _saveInBackground(value);
       }
     }
   }
@@ -1403,13 +1405,18 @@ class _QuotePageState extends State<QuotePage> with WidgetsBindingObserver {
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     timer?.cancel();
+    final value = quote;
+    if (value != null) _saveInBackground(value);
     super.dispose();
   }
 
   void update(Quote value) {
     setState(() => quote = value);
     timer?.cancel();
-    timer = Timer(const Duration(milliseconds: 500), () => saveDraft(value));
+    timer = Timer(
+      const Duration(milliseconds: 500),
+      () => _saveInBackground(value),
+    );
   }
 
   Future<void> closeToHome() async {
@@ -1418,7 +1425,7 @@ class _QuotePageState extends State<QuotePage> with WidgetsBindingObserver {
     try {
       timer?.cancel();
       final value = quote;
-      if (value != null) await saveQuoteDraft(widget.db, value);
+      if (value != null) await saveDraft(value);
       await widget.close();
     } finally {
       closing = false;
@@ -1426,15 +1433,29 @@ class _QuotePageState extends State<QuotePage> with WidgetsBindingObserver {
   }
 
   Future<void> saveDraft(Quote value) async {
-    try {
-      await saveQuoteDraft(widget.db, value);
-    } catch (exception) {
-      if (mounted) setState(() => error = exception.toString());
-    }
+    final completer = Completer<void>();
+    _writeQueue = _writeQueue.then((_) async {
+      try {
+        await saveQuoteDraft(widget.db, value);
+        completer.complete();
+      } catch (exception, stackTrace) {
+        if (mounted) setState(() => error = exception.toString());
+        completer.completeError(exception, stackTrace);
+      }
+    });
+    return completer.future;
+  }
+
+  void _saveInBackground(Quote value) {
+    unawaited(saveDraft(value).catchError((_) {}));
   }
 
   Future<void> finishAndReview() async {
+    if (finishing) return;
+    setState(() => finishing = true);
     try {
+      timer?.cancel();
+      await _writeQueue;
       final wasDraft = quote!.finalizedAt == null;
       final value = await finalizeQuote(
         widget.db,
@@ -1459,6 +1480,8 @@ class _QuotePageState extends State<QuotePage> with WidgetsBindingObserver {
       if (mounted && latest != null) setState(() => quote = latest);
     } catch (error) {
       if (mounted) _message(context, error);
+    } finally {
+      if (mounted) setState(() => finishing = false);
     }
   }
 
@@ -1980,7 +2003,7 @@ class _QuotePageState extends State<QuotePage> with WidgetsBindingObserver {
                   SizedBox(
                     width: double.infinity,
                     child: FilledButton(
-                      onPressed: finishAndReview,
+                      onPressed: finishing ? null : finishAndReview,
                       style: FilledButton.styleFrom(
                         backgroundColor: Theme.of(context).colorScheme.primary,
                         padding: const EdgeInsets.symmetric(vertical: 11),
@@ -3427,7 +3450,7 @@ class SettingsPage extends StatelessWidget {
               );
               if (confirmed != true) return;
               try {
-                await deleteAllLocalData(db);
+                await deleteAllDeviceData(db);
                 await refresh();
               } catch (error) {
                 if (context.mounted) _message(context, error);

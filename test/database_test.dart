@@ -41,7 +41,7 @@ void main() {
   }
 
   test('la cuota gratis cuenta cotizaciones manuales, no las de IA', () async {
-    for (var index = 0; index < freeManualQuotesPerMonth; index++) {
+    for (var index = 0; index < freeManualQuotesPerMonth + 2; index++) {
       await finalizeQuote(
         db,
         await completeDraft(client: 'Cliente $index'),
@@ -49,13 +49,8 @@ void main() {
       );
     }
 
-    expect((await getDocumentUsage(db)).remaining, 0);
-    expect(
-      () async => finalizeQuote(db, await completeDraft(), false),
-      throwsA(
-        predicate((error) => error.toString().contains('FREE_LIMIT_REACHED')),
-      ),
-    );
+    final extra = await finalizeQuote(db, await completeDraft(), false);
+    expect(extra?.finalizedAt, isNotNull);
 
     final aiQuote = await finalizeQuote(
       db,
@@ -63,25 +58,24 @@ void main() {
       false,
     );
     expect(aiQuote?.origin, QuoteOrigin.ai);
-    expect((await getDocumentUsage(db)).used, freeManualQuotesPerMonth);
+    expect((await getDocumentUsage(db)).used, freeManualQuotesPerMonth + 3);
   });
 
-  test('el origen queda fijo después de finalizar para no liberar cuota', () async {
-    final quote = await finalizeQuote(
-      db,
-      await completeDraft(),
-      false,
-    );
-    expect(quote?.origin, QuoteOrigin.manual);
-    final editedWithAi = quote!.copyWith(
-      origin: QuoteOrigin.ai,
-      notes: 'Mejorada con IA',
-    );
-    await saveQuoteDraft(db, editedWithAi);
-    final saved = await getQuote(db, quote.id);
-    expect(saved?.origin, QuoteOrigin.manual);
-    expect((await getDocumentUsage(db)).used, 1);
-  });
+  test(
+    'el origen queda fijo después de finalizar para no liberar cuota',
+    () async {
+      final quote = await finalizeQuote(db, await completeDraft(), false);
+      expect(quote?.origin, QuoteOrigin.manual);
+      final editedWithAi = quote!.copyWith(
+        origin: QuoteOrigin.ai,
+        notes: 'Mejorada con IA',
+      );
+      await saveQuoteDraft(db, editedWithAi);
+      final saved = await getQuote(db, quote.id);
+      expect(saved?.origin, QuoteOrigin.manual);
+      expect((await getDocumentUsage(db)).used, 1);
+    },
+  );
 
   test('un recibo no consume cuota y un pago protege la cotización', () async {
     final first = await finalizeQuote(db, await completeDraft(), false);
@@ -144,6 +138,45 @@ void main() {
     expect(items.first.concept, 'Pintura de muro');
     expect(items.first.timesUsed, 2);
     expect(items.first.unitPriceCents, 4500);
+  });
+
+  test('la base impide sobrepagos concurrentes', () async {
+    final finalized = await finalizeQuote(
+      db,
+      await completeDraft(price: 10000),
+      false,
+    );
+    final accepted = (await setQuoteStatus(
+      db,
+      finalized!.id,
+      QuoteStatus.accepted,
+    ))!;
+
+    final attempts = await Future.wait(
+      [
+        recordPayment(db, accepted, PaymentMethod.cash, 7500, 'Primero'),
+        recordPayment(db, accepted, PaymentMethod.cash, 7500, 'Segundo'),
+      ].map((attempt) async {
+        try {
+          await attempt;
+          return true;
+        } catch (_) {
+          return false;
+        }
+      }),
+    );
+
+    expect(attempts.where((value) => value), hasLength(1));
+    final saved = (await getQuote(db, accepted.id))!;
+    expect(paymentSummary(saved.totalCents, saved.payments).paidCents, 7500);
+  });
+
+  test('el respaldo incluye más de cien clientes', () async {
+    for (var index = 0; index < 105; index++) {
+      await saveClient(db, name: 'Cliente $index');
+    }
+    final snapshot = await exportSnapshot(db);
+    expect(snapshot.clients, hasLength(105));
   });
 
   test(

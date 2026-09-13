@@ -6,7 +6,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:sqflite/sqflite.dart';
 import 'domain.dart';
 
-const schemaVersion = 6;
+const schemaVersion = 7;
 String now() => DateTime.now().toUtc().toIso8601String();
 String newId() =>
     '${DateTime.now().microsecondsSinceEpoch}-${Random.secure().nextInt(1 << 32).toRadixString(16)}';
@@ -33,29 +33,30 @@ Future<Database> openJaleDatabaseAt(String databasePath) {
         );
         await db.execute('DROP TABLE quote_lines_old');
       }
-      if (oldVersion < 3 || !await _hasColumn(db, 'business_profile', 'icon_key')) {
+      if (!await _hasColumn(db, 'business_profile', 'icon_key')) {
         await db.execute(
           'ALTER TABLE business_profile ADD COLUMN icon_key TEXT',
         );
       }
-      if (oldVersion < 4 || !await _hasTable(db, 'catalog_items')) {
+      if (!await _hasTable(db, 'catalog_items')) {
         await _createCatalogItems(db);
       }
-      if (oldVersion < 5 || !await _hasColumn(db, 'quotes', 'origin')) {
+      if (!await _hasColumn(db, 'quotes', 'origin')) {
         await db.execute(
           "ALTER TABLE quotes ADD COLUMN origin TEXT NOT NULL DEFAULT 'manual'",
         );
       }
-      if (oldVersion < 6 || !await _hasColumn(db, 'quotes', 'client_phone')) {
+      if (!await _hasColumn(db, 'quotes', 'client_phone')) {
         await db.execute(
           "ALTER TABLE quotes ADD COLUMN client_phone TEXT NOT NULL DEFAULT ''",
         );
       }
-      if (oldVersion < 6 || !await _hasColumn(db, 'quotes', 'client_address')) {
+      if (!await _hasColumn(db, 'quotes', 'client_address')) {
         await db.execute(
           "ALTER TABLE quotes ADD COLUMN client_address TEXT NOT NULL DEFAULT ''",
         );
       }
+      if (oldVersion < 7) await _createPaymentGuards(db);
     },
   );
 }
@@ -100,12 +101,44 @@ Future<void> _createSchema(Database db) async {
     await tx.execute(
       'CREATE INDEX idx_payments_quote ON payments(quote_id, paid_at)',
     );
+    await _createPaymentGuards(tx);
     await tx.insert('app_metadata', {'key': 'next_quote_number', 'value': '1'});
     await tx.insert('app_metadata', {
       'key': 'next_receipt_number',
       'value': '1',
     });
   });
+}
+
+Future<void> _createPaymentGuards(DatabaseExecutor db) async {
+  await db.execute('DROP TRIGGER IF EXISTS payments_guard_insert');
+  await db.execute('DROP TRIGGER IF EXISTS payments_guard_update');
+  await db.execute('''
+    CREATE TRIGGER payments_guard_insert BEFORE INSERT ON payments
+    WHEN NEW.voided_at IS NULL
+    BEGIN
+      SELECT CASE WHEN NEW.amount_cents <= 0
+        THEN RAISE(ABORT, 'PAYMENT_AMOUNT_INVALID') END;
+      SELECT CASE WHEN COALESCE((SELECT status FROM quotes WHERE id=NEW.quote_id), '') <> 'accepted'
+        THEN RAISE(ABORT, 'PAYMENT_QUOTE_NOT_ACCEPTED') END;
+      SELECT CASE WHEN NEW.amount_cents + COALESCE((SELECT SUM(amount_cents) FROM payments WHERE quote_id=NEW.quote_id AND voided_at IS NULL), 0) >
+        COALESCE((SELECT total_cents FROM quotes WHERE id=NEW.quote_id), -1)
+        THEN RAISE(ABORT, 'PAYMENT_EXCEEDS_BALANCE') END;
+    END
+  ''');
+  await db.execute('''
+    CREATE TRIGGER payments_guard_update BEFORE UPDATE ON payments
+    WHEN NEW.voided_at IS NULL
+    BEGIN
+      SELECT CASE WHEN NEW.amount_cents <= 0
+        THEN RAISE(ABORT, 'PAYMENT_AMOUNT_INVALID') END;
+      SELECT CASE WHEN COALESCE((SELECT status FROM quotes WHERE id=NEW.quote_id), '') <> 'accepted'
+        THEN RAISE(ABORT, 'PAYMENT_QUOTE_NOT_ACCEPTED') END;
+      SELECT CASE WHEN NEW.amount_cents + COALESCE((SELECT SUM(amount_cents) FROM payments WHERE quote_id=NEW.quote_id AND voided_at IS NULL AND id<>OLD.id), 0) >
+        COALESCE((SELECT total_cents FROM quotes WHERE id=NEW.quote_id), -1)
+        THEN RAISE(ABORT, 'PAYMENT_EXCEEDS_BALANCE') END;
+    END
+  ''');
 }
 
 Future<void> _createCatalogItems(DatabaseExecutor db) async {
@@ -217,7 +250,6 @@ Future<List<Client>> listClients(Database db, [String query = '']) async {
     where: 'name LIKE ? OR phone LIKE ? OR address LIKE ?',
     whereArgs: [like, like, like],
     orderBy: 'updated_at DESC, name',
-    limit: 100,
   );
   return rows.map(clientFromRow).toList();
 }
@@ -256,7 +288,6 @@ Future<List<CatalogItem>> listCatalogItems(
     where: 'concept LIKE ?',
     whereArgs: ['%${query.trim()}%'],
     orderBy: 'times_used DESC, updated_at DESC',
-    limit: 100,
   );
   return rows.map(catalogItemFromRow).toList();
 }
@@ -375,7 +406,7 @@ Future<String> createQuote(
   return id;
 }
 
-Future<Quote?> getQuote(Database db, String id) async {
+Future<Quote?> getQuote(DatabaseExecutor db, String id) async {
   final rows = await db.query(
     'quotes',
     where: 'id=?',
@@ -477,7 +508,7 @@ Future<void> saveQuoteDraft(Database db, Quote quote) async {
 Future<List<QuoteSummary>> listQuotes(Database db, [String query = '']) async {
   final like = '%${query.trim()}%';
   final rows = await db.rawQuery(
-    '''SELECT q.*, COALESCE(SUM(CASE WHEN p.voided_at IS NULL THEN p.amount_cents ELSE 0 END),0) AS paid_cents FROM quotes q LEFT JOIN payments p ON p.quote_id=q.id WHERE q.client_name LIKE ? OR CAST(q.quote_number AS TEXT) LIKE ? GROUP BY q.id ORDER BY q.updated_at DESC LIMIT 150''',
+    '''SELECT q.*, COALESCE(SUM(CASE WHEN p.voided_at IS NULL THEN p.amount_cents ELSE 0 END),0) AS paid_cents FROM quotes q LEFT JOIN payments p ON p.quote_id=q.id WHERE q.client_name LIKE ? OR CAST(q.quote_number AS TEXT) LIKE ? GROUP BY q.id ORDER BY q.updated_at DESC''',
     [like, like],
   );
   return rows.map((row) {
@@ -534,7 +565,7 @@ Future<UsageSummary> getDocumentUsage(
 Future<Quote?> finalizeQuote(
   Database db,
   Quote quote,
-  bool isPro, {
+  bool _, {
   int freeLimit = freeManualQuotesPerMonth,
 }) async {
   final validation = validateQuoteForFinalization(
@@ -545,10 +576,6 @@ Future<Quote?> finalizeQuote(
   if (validation != null) throw Exception(validation);
   await saveQuoteDraft(db, quote);
   if (quote.finalizedAt != null) return getQuote(db, quote.id);
-  final usage = await getDocumentUsage(db, limit: freeLimit);
-  if (!isPro && quote.origin == QuoteOrigin.manual && usage.remaining <= 0) {
-    throw Exception('FREE_LIMIT_REACHED');
-  }
   final stamp = now();
   await db.update(
     'quotes',
@@ -699,16 +726,32 @@ Future<void> deleteAllLocalData(Database db) async {
 }
 
 Future<BackupSnapshot> exportSnapshot(Database db) async {
-  final metadata = {
-    for (final row in await db.query('app_metadata'))
-      row['key']! as String: row['value']! as String,
-  };
-  final quotes = <Quote>[];
-  for (final row in await db.query('quotes', orderBy: 'quote_number')) {
-    final quote = await getQuote(db, row['id']! as String);
-    if (quote != null) quotes.add(quote);
-  }
-  final profile = await getBusinessProfile(db);
+  final data = await db.transaction((tx) async {
+    final quotes = <Quote>[];
+    for (final row in await tx.query('quotes', orderBy: 'quote_number')) {
+      final quote = await getQuote(tx, row['id']! as String);
+      if (quote != null) quotes.add(quote);
+    }
+    return (
+      metadata: {
+        for (final row in await tx.query('app_metadata'))
+          row['key']! as String: row['value']! as String,
+      },
+      quotes: quotes,
+      profile: profileFromRow(
+        (await tx.query('business_profile', limit: 1)).firstOrNull,
+      ),
+      clients: (await tx.query(
+        'clients',
+        orderBy: 'updated_at DESC, name',
+      )).map(clientFromRow).toList(),
+      catalog: (await tx.query(
+        'catalog_items',
+        orderBy: 'times_used DESC, updated_at DESC',
+      )).map(catalogItemFromRow).toList(),
+    );
+  });
+  final profile = data.profile;
   String? logoBase64;
   final logoPath = profile?.logoUri;
   if (logoPath != null && logoPath.isNotEmpty) {
@@ -723,24 +766,16 @@ Future<BackupSnapshot> exportSnapshot(Database db) async {
     schemaVersion: 1,
     exportedAt: now(),
     businessProfile: profile,
-    clients: await listClients(db),
-    quotes: quotes,
-    metadata: metadata,
+    clients: data.clients,
+    quotes: data.quotes,
+    metadata: data.metadata,
     logoBase64: logoBase64,
-    catalogItems: await listCatalogItems(db),
+    catalogItems: data.catalog,
   );
 }
 
-enum BackupImportMode { replace, merge }
-
-Future<void> importSnapshot(
-  Database db,
-  BackupSnapshot snapshot, {
-  BackupImportMode mode = BackupImportMode.replace,
-}) async {
-  if (snapshot.schemaVersion != 1) {
-    throw Exception('El respaldo no es compatible.');
-  }
+Future<void> importSnapshot(Database db, BackupSnapshot snapshot) async {
+  _validateSnapshot(snapshot);
   String? restoredLogoPath;
   if (snapshot.logoBase64 != null) {
     try {
@@ -749,14 +784,14 @@ Future<void> importSnapshot(
       final directory = await getApplicationDocumentsDirectory();
       final branding = Directory(path.join(directory.path, 'branding'));
       await branding.create(recursive: true);
-      restoredLogoPath = path.join(branding.path, 'restored-logo.jpg');
+      restoredLogoPath = path.join(branding.path, 'restored-${newId()}.jpg');
       await File(restoredLogoPath).writeAsBytes(bytes, flush: true);
     } catch (_) {
       throw Exception('El logotipo del respaldo está dañado.');
     }
   }
-  await db.transaction((tx) async {
-    if (mode == BackupImportMode.replace) {
+  try {
+    await db.transaction((tx) async {
       await tx.delete('payments');
       await tx.delete('quote_lines');
       await tx.delete('quotes');
@@ -764,104 +799,206 @@ Future<void> importSnapshot(
       await tx.delete('business_profile');
       await tx.delete('catalog_items');
       await tx.delete('app_metadata');
-    }
-    final profile = snapshot.businessProfile;
-    if (profile != null) {
-      await tx.insert('business_profile', {
-        'id': profile.id,
-        'name': profile.name,
-        'trade': profile.trade,
-        'phone': profile.phone,
-        'logo_uri':
-            restoredLogoPath ??
-            (profile.logoUri != null && File(profile.logoUri!).existsSync()
-                ? profile.logoUri
-                : null),
-        'icon_key': profile.iconKey,
-        'brand_color': profile.brandColor,
-        'created_at': profile.createdAt,
-        'updated_at': profile.updatedAt,
-      }, conflictAlgorithm: ConflictAlgorithm.replace);
-    }
-    for (final client in snapshot.clients) {
-      await tx.insert('clients', {
-        'id': client.id,
-        'name': client.name,
-        'phone': client.phone,
-        'address': client.address,
-        'notes': client.notes,
-        'created_at': client.createdAt,
-        'updated_at': client.updatedAt,
-      }, conflictAlgorithm: ConflictAlgorithm.replace);
-    }
-    for (final quote in snapshot.quotes) {
-      await tx.insert('quotes', {
-        'id': quote.id,
-        'quote_number': quote.quoteNumber,
-        'client_id': quote.clientId,
-        'client_name': quote.clientName,
-        'client_phone': quote.clientPhone,
-        'client_address': quote.clientAddress,
-        'status': quote.status.name,
-        'origin': quote.origin.name,
-        'issued_at': quote.issuedAt,
-        'valid_until': quote.validUntil,
-        'notes': quote.notes,
-        'total_cents': quote.totalCents,
-        'finalized_at': quote.finalizedAt,
-        'quota_period': quote.quotaPeriod,
-        'created_at': quote.createdAt,
-        'updated_at': quote.updatedAt,
-      }, conflictAlgorithm: ConflictAlgorithm.replace);
-      await tx.delete(
-        'quote_lines',
-        where: 'quote_id=?',
-        whereArgs: [quote.id],
+      final profile = snapshot.businessProfile;
+      if (profile != null) {
+        await tx.insert('business_profile', {
+          'id': profile.id,
+          'name': profile.name,
+          'trade': profile.trade,
+          'phone': profile.phone,
+          'logo_uri':
+              restoredLogoPath ??
+              (profile.logoUri != null && File(profile.logoUri!).existsSync()
+                  ? profile.logoUri
+                  : null),
+          'icon_key': profile.iconKey,
+          'brand_color': profile.brandColor,
+          'created_at': profile.createdAt,
+          'updated_at': profile.updatedAt,
+        });
+      }
+      for (final client in snapshot.clients) {
+        await tx.insert('clients', {
+          'id': client.id,
+          'name': client.name,
+          'phone': client.phone,
+          'address': client.address,
+          'notes': client.notes,
+          'created_at': client.createdAt,
+          'updated_at': client.updatedAt,
+        });
+      }
+      for (final quote in snapshot.quotes) {
+        await tx.insert('quotes', {
+          'id': quote.id,
+          'quote_number': quote.quoteNumber,
+          'client_id': quote.clientId,
+          'client_name': quote.clientName,
+          'client_phone': quote.clientPhone,
+          'client_address': quote.clientAddress,
+          'status': quote.status.name,
+          'origin': quote.origin.name,
+          'issued_at': quote.issuedAt,
+          'valid_until': quote.validUntil,
+          'notes': quote.notes,
+          'total_cents': quote.totalCents,
+          'finalized_at': quote.finalizedAt,
+          'quota_period': quote.quotaPeriod,
+          'created_at': quote.createdAt,
+          'updated_at': quote.updatedAt,
+        });
+        for (final line in quote.lines) {
+          await tx.insert('quote_lines', {
+            'id': line.id,
+            'quote_id': quote.id,
+            'concept': line.concept,
+            'quantity': line.quantity,
+            'unit_price_cents': line.unitPriceCents,
+            'position': line.position,
+            'created_at': quote.createdAt,
+            'updated_at': quote.updatedAt,
+          });
+        }
+        for (final payment in quote.payments) {
+          await tx.insert('payments', {
+            'id': payment.id,
+            'quote_id': quote.id,
+            'receipt_number': payment.receiptNumber,
+            'method': payment.method.name,
+            'amount_cents': payment.amountCents,
+            'paid_at': payment.paidAt,
+            'notes': payment.notes,
+            'voided_at': payment.voidedAt,
+            'receipt_finalized_at': payment.receiptFinalizedAt,
+            'quota_period': payment.quotaPeriod,
+            'created_at': quote.createdAt,
+            'updated_at': quote.updatedAt,
+          });
+        }
+      }
+      for (final entry in snapshot.metadata.entries.where(
+        (entry) =>
+            entry.key != 'next_quote_number' &&
+            entry.key != 'next_receipt_number',
+      )) {
+        await tx.insert('app_metadata', {
+          'key': entry.key,
+          'value': entry.value,
+        });
+      }
+      for (final item in snapshot.catalogItems) {
+        await tx.insert('catalog_items', {
+          'id': item.id,
+          'concept': item.concept,
+          'unit_price_cents': item.unitPriceCents,
+          'times_used': item.timesUsed,
+          'created_at': item.createdAt,
+          'updated_at': item.updatedAt,
+        });
+      }
+      final nextQuote = snapshot.quotes.fold<int>(
+        1,
+        (value, quote) => max(value, quote.quoteNumber + 1),
       );
-      for (final line in quote.lines) {
-        await tx.insert('quote_lines', {
-          'id': line.id,
-          'quote_id': quote.id,
-          'concept': line.concept,
-          'quantity': line.quantity,
-          'unit_price_cents': line.unitPriceCents,
-          'position': line.position,
-          'created_at': quote.createdAt,
-          'updated_at': quote.updatedAt,
-        }, conflictAlgorithm: ConflictAlgorithm.replace);
-      }
-      for (final payment in quote.payments) {
-        await tx.insert('payments', {
-          'id': payment.id,
-          'quote_id': quote.id,
-          'receipt_number': payment.receiptNumber,
-          'method': payment.method.name,
-          'amount_cents': payment.amountCents,
-          'paid_at': payment.paidAt,
-          'notes': payment.notes,
-          'voided_at': payment.voidedAt,
-          'receipt_finalized_at': payment.receiptFinalizedAt,
-          'quota_period': payment.quotaPeriod,
-          'created_at': quote.createdAt,
-          'updated_at': quote.updatedAt,
-        }, conflictAlgorithm: ConflictAlgorithm.replace);
-      }
-    }
-    for (final entry in snapshot.metadata.entries) {
+      final nextReceipt = snapshot.quotes
+          .expand((quote) => quote.payments)
+          .fold<int>(
+            1,
+            (value, payment) => max(value, payment.receiptNumber + 1),
+          );
       await tx.insert('app_metadata', {
-        'key': entry.key,
-        'value': entry.value,
-      }, conflictAlgorithm: ConflictAlgorithm.replace);
+        'key': 'next_quote_number',
+        'value': '$nextQuote',
+      });
+      await tx.insert('app_metadata', {
+        'key': 'next_receipt_number',
+        'value': '$nextReceipt',
+      });
+    });
+  } catch (_) {
+    if (restoredLogoPath != null) {
+      try {
+        await File(restoredLogoPath).delete();
+      } catch (_) {
+        // Best effort cleanup; the database transaction has already rolled back.
+      }
     }
-    for (final item in snapshot.catalogItems) {
-      await tx.insert('catalog_items', {
-        'id': item.id,
-        'concept': item.concept,
-        'unit_price_cents': item.unitPriceCents,
-        'times_used': item.timesUsed,
-        'created_at': item.createdAt,
-        'updated_at': item.updatedAt,
-      }, conflictAlgorithm: ConflictAlgorithm.replace);
+    rethrow;
+  }
+}
+
+void _validateSnapshot(BackupSnapshot snapshot) {
+  if (snapshot.schemaVersion != 1) {
+    throw Exception('El respaldo no es compatible.');
+  }
+  if (snapshot.clients.length > 100000 ||
+      snapshot.quotes.length > 100000 ||
+      snapshot.catalogItems.length > 100000) {
+    throw Exception('El respaldo excede el tamaño permitido.');
+  }
+  final clientIds = <String>{};
+  for (final client in snapshot.clients) {
+    if (client.id.isEmpty ||
+        client.name.trim().isEmpty ||
+        !clientIds.add(client.id)) {
+      throw Exception('El respaldo contiene clientes inválidos o duplicados.');
     }
-  });
+  }
+  final quoteIds = <String>{};
+  final quoteNumbers = <int>{};
+  final paymentIds = <String>{};
+  final receiptNumbers = <int>{};
+  final lineIds = <String>{};
+  for (final quote in snapshot.quotes) {
+    if (quote.id.isEmpty ||
+        quote.quoteNumber <= 0 ||
+        !quoteIds.add(quote.id) ||
+        !quoteNumbers.add(quote.quoteNumber) ||
+        (quote.clientId != null && !clientIds.contains(quote.clientId))) {
+      throw Exception('El respaldo contiene cotizaciones inválidas.');
+    }
+    if (quoteTotal(quote.lines) != quote.totalCents || quote.totalCents < 0) {
+      throw Exception(
+        'El total de una cotización no coincide con sus conceptos.',
+      );
+    }
+    for (final line in quote.lines) {
+      if (line.id.isEmpty ||
+          !lineIds.add(line.id) ||
+          (quote.status != QuoteStatus.draft && line.concept.trim().isEmpty) ||
+          !line.quantity.isFinite ||
+          line.quantity <= 0 ||
+          line.unitPriceCents < 0) {
+        throw Exception('El respaldo contiene conceptos inválidos.');
+      }
+    }
+    var paid = 0;
+    for (final payment in quote.payments) {
+      if (payment.id.isEmpty ||
+          payment.quoteId != quote.id ||
+          payment.receiptNumber <= 0 ||
+          payment.amountCents <= 0 ||
+          !paymentIds.add(payment.id) ||
+          !receiptNumbers.add(payment.receiptNumber)) {
+        throw Exception('El respaldo contiene pagos inválidos.');
+      }
+      if (payment.voidedAt == null) paid += payment.amountCents;
+    }
+    if (paid > quote.totalCents ||
+        (paid > 0 && quote.status != QuoteStatus.accepted)) {
+      throw Exception('Los pagos del respaldo no coinciden con la cotización.');
+    }
+  }
+  final catalogIds = <String>{};
+  final concepts = <String>{};
+  for (final item in snapshot.catalogItems) {
+    if (item.id.isEmpty ||
+        item.concept.trim().isEmpty ||
+        item.unitPriceCents < 0 ||
+        item.timesUsed < 0 ||
+        !catalogIds.add(item.id) ||
+        !concepts.add(item.concept.trim().toLowerCase())) {
+      throw Exception('El respaldo contiene conceptos de catálogo inválidos.');
+    }
+  }
 }
