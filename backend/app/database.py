@@ -1,14 +1,18 @@
+import base64
 import hashlib
-from contextlib import contextmanager
-from datetime import datetime, timezone
+import json
+import secrets
+from contextlib import asynccontextmanager
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from uuid import UUID, uuid4
 
 from psycopg.rows import dict_row
-from psycopg_pool import ConnectionPool
+from psycopg_pool import AsyncConnectionPool
 
 from .auth import Account
 from .config import Settings
-from .models import CreditState
+from .models import AuthSessionResponse, CreditState
 from .quota import choose_credit
 
 
@@ -18,40 +22,65 @@ class CreditUnavailable(Exception):
         self.code = code
 
 
+@dataclass(frozen=True)
+class Reservation:
+    id: UUID
+    replay: bool = False
+
+
 class CreditStore:
     def __init__(self, settings: Settings):
         self.settings = settings
-        self.pool = ConnectionPool(
+        self.pool = AsyncConnectionPool(
             conninfo=settings.database_url,
             min_size=0,
-            max_size=5,
+            max_size=8,
             open=False,
             kwargs={"row_factory": dict_row},
         )
 
-    def open(self) -> None:
-        self.pool.open(wait=True)
+    async def open(self) -> None:
+        await self.pool.open(wait=True)
 
-    def close(self) -> None:
-        self.pool.close()
+    async def close(self) -> None:
+        await self.pool.close()
+
+    async def ready(self) -> bool:
+        try:
+            async with self.pool.connection() as connection:
+                row = await (await connection.execute("SELECT 1 AS ready")).fetchone()
+                return bool(row and row["ready"] == 1)
+        except Exception:
+            return False
 
     @staticmethod
     def period() -> str:
         return datetime.now(timezone.utc).strftime("%Y-%m")
 
-    def installation_hash(self, installation_id: str) -> str:
-        # Quotas follow the installation across Wi-Fi/mobile networks. The
-        # edge rate limiter separately includes IP to absorb request floods.
-        value = f"{self.settings.installation_pepper}:{installation_id}"
+    @staticmethod
+    def _hash(value: str) -> str:
         return hashlib.sha256(value.encode()).hexdigest()
 
-    @contextmanager
-    def transaction(self):
-        with self.pool.connection() as connection:
-            with connection.transaction():
+    def installation_hash(self, installation_id: str) -> str:
+        value = f"{self.settings.installation_pepper}:{installation_id}"
+        return self._hash(value)
+
+    @asynccontextmanager
+    async def transaction(self):
+        async with self.pool.connection() as connection:
+            async with connection.transaction():
                 yield connection
 
-    def reserve(
+    async def _ensure_account(self, connection, account: Account) -> None:
+        await connection.execute(
+            """INSERT INTO app_accounts (user_id, email)
+               VALUES (%s, %s)
+               ON CONFLICT (user_id) DO UPDATE
+               SET email=excluded.email, updated_at=now()""",
+            (account.user_id, account.email),
+        )
+
+    async def reserve(
         self,
         *,
         account: Account | None,
@@ -59,70 +88,56 @@ class CreditStore:
         idempotency_key: UUID,
         request_hash: str,
         model: str | None = None,
-    ) -> UUID:
+    ) -> Reservation:
         period = self.period()
         reservation_id = uuid4()
-        with self.transaction() as connection:
-            credit_kind = "guest"
-            existing = connection.execute(
-                "SELECT id, status, request_hash FROM ai_usage WHERE idempotency_key=%s FOR UPDATE",
-                (idempotency_key,),
+        stale_before = datetime.now(timezone.utc) - timedelta(minutes=2)
+        async with self.transaction() as connection:
+            existing = await (
+                await connection.execute(
+                    """SELECT id, status, request_hash, created_at
+                       FROM ai_usage WHERE idempotency_key=%s FOR UPDATE""",
+                    (idempotency_key,),
+                )
             ).fetchone()
             if existing:
                 if existing["request_hash"] != request_hash:
                     raise CreditUnavailable("IDEMPOTENCY_REUSED")
                 if existing["status"] == "succeeded":
-                    raise CreditUnavailable("REQUEST_ALREADY_COMPLETED")
-                raise CreditUnavailable("REQUEST_IN_PROGRESS")
+                    return Reservation(existing["id"], replay=True)
+                if existing["status"] == "pending":
+                    if existing["created_at"] > stale_before:
+                        raise CreditUnavailable("REQUEST_IN_PROGRESS")
+                    await connection.execute(
+                        "UPDATE ai_usage SET created_at=now() WHERE id=%s",
+                        (existing["id"],),
+                    )
+                    return Reservation(existing["id"])
+                reservation_id = existing["id"]
 
+            credit_kind = "guest"
             if account is None:
-                guest = connection.execute(
-                    """INSERT INTO guest_installations (installation_hash, ai_uses)
-                       VALUES (%s, 1)
-                       ON CONFLICT (installation_hash)
-                       DO UPDATE SET ai_uses=guest_installations.ai_uses+1, updated_at=now()
-                       WHERE guest_installations.ai_uses < 1
-                       RETURNING ai_uses""",
-                    (installation_hash,),
+                guest = await (
+                    await connection.execute(
+                        """INSERT INTO guest_installations (installation_hash, ai_uses)
+                           VALUES (%s, 1)
+                           ON CONFLICT (installation_hash)
+                           DO UPDATE SET ai_uses=guest_installations.ai_uses+1, updated_at=now()
+                           WHERE guest_installations.ai_uses < 1
+                           RETURNING ai_uses""",
+                        (installation_hash,),
+                    )
                 ).fetchone()
                 if guest is None:
                     raise CreditUnavailable("EMAIL_REQUIRED")
             else:
-                connection.execute(
-                    """INSERT INTO app_accounts (user_id, email, registered_period)
-                       VALUES (%s, %s, %s)
-                       ON CONFLICT (user_id) DO UPDATE SET email=excluded.email, updated_at=now()""",
-                    (account.user_id, account.email, account.registered_period or period),
-                )
-                account_row = connection.execute(
-                    """SELECT signup_bonus_remaining, registered_period
-                       FROM app_accounts WHERE user_id=%s FOR UPDATE""",
-                    (account.user_id,),
-                ).fetchone()
-                signup_bonus = account_row["signup_bonus_remaining"]
-                if signup_bonus > 0:
-                    # Claim the welcome pool for the first account seen on an
-                    # installation, even before its first AI request. This
-                    # prevents creating several accounts to multiply credits.
-                    claim = connection.execute(
-                        "SELECT user_id FROM signup_credit_claims WHERE installation_hash=%s",
-                        (installation_hash,),
-                    ).fetchone()
-                    if claim is None:
-                        connection.execute(
-                            """INSERT INTO signup_credit_claims (installation_hash, user_id)
-                               VALUES (%s, %s) ON CONFLICT (installation_hash) DO NOTHING""",
-                            (installation_hash, account.user_id),
-                        )
-                        claim = connection.execute(
-                            "SELECT user_id FROM signup_credit_claims WHERE installation_hash=%s",
-                            (installation_hash,),
-                        ).fetchone()
-                    if claim["user_id"] != account.user_id:
-                        signup_bonus = 0
-                entitlement = connection.execute(
-                    "SELECT is_pro, pro_until FROM entitlements WHERE user_id=%s FOR UPDATE",
-                    (account.user_id,),
+                await self._ensure_account(connection, account)
+                entitlement = await (
+                    await connection.execute(
+                        """SELECT is_pro, pro_until FROM entitlements
+                           WHERE user_id=%s FOR UPDATE""",
+                        (account.user_id,),
+                    )
                 ).fetchone()
                 is_pro = bool(
                     entitlement
@@ -132,42 +147,46 @@ class CreditStore:
                         or entitlement["pro_until"] > datetime.now(timezone.utc)
                     )
                 )
-                quota = connection.execute(
-                    """INSERT INTO monthly_quotas (user_id, period)
-                       VALUES (%s, %s)
-                       ON CONFLICT (user_id, period) DO UPDATE SET updated_at=now()
-                       RETURNING ai_used""",
-                    (account.user_id, period),
+                quota = await (
+                    await connection.execute(
+                        """INSERT INTO monthly_quotas (user_id, period)
+                           VALUES (%s, %s)
+                           ON CONFLICT (user_id, period)
+                           DO UPDATE SET updated_at=now()
+                           RETURNING ai_used""",
+                        (account.user_id, period),
+                    )
                 ).fetchone()
                 chosen = choose_credit(
                     is_pro=is_pro,
                     ai_used=quota["ai_used"],
-                    signup_bonus_remaining=signup_bonus,
-                    registered_period=account_row["registered_period"],
-                    current_period=period,
                     pro_fair_use_monthly=self.settings.pro_fair_use_monthly,
                 )
                 if chosen is None:
-                    code = "FAIR_USE_REVIEW" if is_pro else "AI_LIMIT_REACHED"
-                    raise CreditUnavailable(code)
-                credit_kind = chosen
-                if credit_kind == "signup":
-                    connection.execute(
-                        """UPDATE app_accounts
-                           SET signup_bonus_remaining=signup_bonus_remaining-1, updated_at=now()
-                           WHERE user_id=%s""",
-                        (account.user_id,),
+                    raise CreditUnavailable(
+                        "FAIR_USE_REVIEW" if is_pro else "AI_LIMIT_REACHED"
                     )
-                connection.execute(
+                credit_kind = chosen
+                await connection.execute(
                     """UPDATE monthly_quotas SET ai_used=ai_used+1, updated_at=now()
                        WHERE user_id=%s AND period=%s""",
                     (account.user_id, period),
                 )
 
-            connection.execute(
+            await connection.execute(
                 """INSERT INTO ai_usage
-                   (id, user_id, installation_hash, period, idempotency_key, request_hash, model, credit_kind, status)
-                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'pending')""",
+                   (id, user_id, installation_hash, period, idempotency_key,
+                    request_hash, model, credit_kind, status)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'pending')
+                   ON CONFLICT (idempotency_key) DO UPDATE SET
+                     user_id=excluded.user_id,
+                     installation_hash=excluded.installation_hash,
+                     period=excluded.period,
+                     model=excluded.model,
+                     credit_kind=excluded.credit_kind,
+                     status='pending',
+                     created_at=now(),
+                     finished_at=NULL""",
                 (
                     reservation_id,
                     account.user_id if account else None,
@@ -179,82 +198,82 @@ class CreditStore:
                     credit_kind,
                 ),
             )
-        return reservation_id
+        return Reservation(reservation_id)
 
-    def finish(self, reservation_id: UUID, *, input_tokens: int, output_tokens: int) -> None:
-        with self.transaction() as connection:
-            connection.execute(
+    async def finish(
+        self,
+        reservation: Reservation,
+        *,
+        input_tokens: int,
+        output_tokens: int,
+    ) -> None:
+        async with self.transaction() as connection:
+            await connection.execute(
                 """UPDATE ai_usage SET status='succeeded', input_tokens=%s,
                    output_tokens=%s, finished_at=now()
                    WHERE id=%s AND status='pending'""",
-                (input_tokens, output_tokens, reservation_id),
+                (input_tokens, output_tokens, reservation.id),
             )
 
-    def cancel(self, reservation_id: UUID) -> None:
-        with self.transaction() as connection:
-            usage = connection.execute(
-                "SELECT * FROM ai_usage WHERE id=%s AND status='pending' FOR UPDATE",
-                (reservation_id,),
+    async def cancel(self, reservation: Reservation) -> None:
+        async with self.transaction() as connection:
+            usage = await (
+                await connection.execute(
+                    "SELECT * FROM ai_usage WHERE id=%s AND status='pending' FOR UPDATE",
+                    (reservation.id,),
+                )
             ).fetchone()
             if not usage:
                 return
             if usage["user_id"]:
-                connection.execute(
-                    """UPDATE monthly_quotas SET ai_used=greatest(0, ai_used-1), updated_at=now()
+                await connection.execute(
+                    """UPDATE monthly_quotas
+                       SET ai_used=greatest(0, ai_used-1), updated_at=now()
                        WHERE user_id=%s AND period=%s""",
                     (usage["user_id"], usage["period"]),
                 )
-                if usage["credit_kind"] == "signup":
-                    connection.execute(
-                        """UPDATE app_accounts
-                           SET signup_bonus_remaining=least(2, signup_bonus_remaining+1), updated_at=now()
-                           WHERE user_id=%s""",
-                        (usage["user_id"],),
-                    )
             else:
-                connection.execute(
-                    """UPDATE guest_installations SET ai_uses=greatest(0, ai_uses-1), updated_at=now()
+                await connection.execute(
+                    """UPDATE guest_installations
+                       SET ai_uses=greatest(0, ai_uses-1), updated_at=now()
                        WHERE installation_hash=%s""",
                     (usage["installation_hash"],),
                 )
-            connection.execute(
+            await connection.execute(
                 "UPDATE ai_usage SET status='failed', finished_at=now() WHERE id=%s",
-                (reservation_id,),
+                (reservation.id,),
             )
 
-    def state(self, account: Account | None, installation_hash: str) -> CreditState:
+    async def state(
+        self, account: Account | None, installation_hash: str
+    ) -> CreditState:
         period = self.period()
-        with self.transaction() as connection:
+        async with self.transaction() as connection:
             if account is None:
-                row = connection.execute(
-                    "SELECT ai_uses FROM guest_installations WHERE installation_hash=%s",
-                    (installation_hash,),
+                row = await (
+                    await connection.execute(
+                        "SELECT ai_uses FROM guest_installations WHERE installation_hash=%s",
+                        (installation_hash,),
+                    )
                 ).fetchone()
                 return CreditState(
                     authenticated=False,
                     is_pro=False,
                     ai_remaining=max(0, 1 - (row["ai_uses"] if row else 0)),
-                    manual_remaining=3,
-                    signup_bonus_remaining=2,
                     period=period,
                 )
-            connection.execute(
-                """INSERT INTO app_accounts (user_id, email, registered_period)
-                   VALUES (%s, %s, %s)
-                   ON CONFLICT (user_id) DO UPDATE SET email=excluded.email, updated_at=now()""",
-                (account.user_id, account.email, account.registered_period or period),
-            )
-            quota = connection.execute(
-                "SELECT ai_used, manual_used FROM monthly_quotas WHERE user_id=%s AND period=%s",
-                (account.user_id, period),
+            await self._ensure_account(connection, account)
+            quota = await (
+                await connection.execute(
+                    "SELECT ai_used FROM monthly_quotas WHERE user_id=%s AND period=%s",
+                    (account.user_id, period),
+                )
             ).fetchone()
-            entitlement = connection.execute(
-                "SELECT is_pro, pro_until FROM entitlements WHERE user_id=%s",
-                (account.user_id,),
-            ).fetchone()
-            account_row = connection.execute(
-                "SELECT signup_bonus_remaining, registered_period FROM app_accounts WHERE user_id=%s",
-                (account.user_id,),
+            entitlement = await (
+                await connection.execute(
+                    "SELECT is_pro, pro_until FROM entitlements WHERE user_id=%s",
+                    (account.user_id,),
+                )
             ).fetchone()
             is_pro = bool(
                 entitlement
@@ -264,89 +283,205 @@ class CreditStore:
                     or entitlement["pro_until"] > datetime.now(timezone.utc)
                 )
             )
-            ai_used = quota["ai_used"] if quota else 0
-            bonus = account_row["signup_bonus_remaining"] if account_row else 2
-            signup_period = account_row["registered_period"] if account_row else period
-            claim = None
-            if bonus > 0:
-                claim = connection.execute(
-                    "SELECT user_id FROM signup_credit_claims WHERE installation_hash=%s",
-                    (installation_hash,),
-                ).fetchone()
-                if claim is None:
-                    connection.execute(
-                        """INSERT INTO signup_credit_claims (installation_hash, user_id)
-                           VALUES (%s, %s) ON CONFLICT (installation_hash) DO NOTHING""",
-                        (installation_hash, account.user_id),
-                    )
-                    claim = connection.execute(
-                        "SELECT user_id FROM signup_credit_claims WHERE installation_hash=%s",
-                        (installation_hash,),
-                    ).fetchone()
-                if claim and claim["user_id"] != account.user_id:
-                    bonus = 0
-            free_remaining = bonus if signup_period == period else max(0, 2 - ai_used)
+            used = quota["ai_used"] if quota else 0
             return CreditState(
                 authenticated=True,
                 is_pro=is_pro,
-                ai_remaining=None if is_pro else free_remaining,
-                manual_remaining=max(
-                    0,
-                    (3 if signup_period == period else 4)
-                    - (quota["manual_used"] if quota else 0),
-                ),
-                signup_bonus_remaining=bonus,
+                ai_remaining=None if is_pro else max(0, 2 - used),
                 period=period,
             )
 
-    def save_entitlement(
+    async def issue_auth_code(
         self,
         *,
         account: Account,
-        token_hash: str,
-        active: bool,
-        expires_at,
-        base_plan_id: str | None,
-        audit: dict,
-    ) -> None:
-        import json
+        code_challenge: str,
+        redirect_uri: str,
+    ) -> str:
+        code = secrets.token_urlsafe(48)
+        async with self.transaction() as connection:
+            await self._ensure_account(connection, account)
+            await connection.execute(
+                """INSERT INTO auth_exchange_codes
+                   (code_hash, user_id, code_challenge, redirect_uri, expires_at)
+                   VALUES (%s, %s, %s, %s, now() + interval '5 minutes')""",
+                (self._hash(code), account.user_id, code_challenge, redirect_uri),
+            )
+        return code
 
-        with self.transaction() as connection:
-            connection.execute(
-                """INSERT INTO app_accounts (user_id, email, registered_period)
-                   VALUES (%s, %s, %s)
-                   ON CONFLICT (user_id) DO UPDATE SET email=excluded.email, updated_at=now()""",
-                (
-                    account.user_id,
-                    account.email,
-                    account.registered_period or self.period(),
-                ),
+    @staticmethod
+    def _pkce_challenge(verifier: str) -> str:
+        digest = hashlib.sha256(verifier.encode()).digest()
+        return base64.urlsafe_b64encode(digest).decode().rstrip("=")
+
+    async def exchange_auth_code(
+        self, *, code: str, verifier: str, redirect_uri: str
+    ) -> AuthSessionResponse | None:
+        async with self.transaction() as connection:
+            row = await (
+                await connection.execute(
+                    """SELECT c.*, a.email FROM auth_exchange_codes c
+                       JOIN app_accounts a ON a.user_id=c.user_id
+                       WHERE c.code_hash=%s FOR UPDATE""",
+                    (self._hash(code),),
+                )
+            ).fetchone()
+            if (
+                not row
+                or row["consumed_at"] is not None
+                or row["expires_at"] <= datetime.now(timezone.utc)
+                or row["redirect_uri"] != redirect_uri
+                or not secrets.compare_digest(
+                    row["code_challenge"], self._pkce_challenge(verifier)
+                )
+            ):
+                return None
+            await connection.execute(
+                "UPDATE auth_exchange_codes SET consumed_at=now() WHERE code_hash=%s",
+                (self._hash(code),),
             )
-            connection.execute(
-                """INSERT INTO entitlements
-                   (user_id, is_pro, product_id, purchase_token_hash, pro_until, verified_at, updated_at)
-                   VALUES (%s, %s, %s, %s, %s, now(), now())
-                   ON CONFLICT (user_id) DO UPDATE SET
-                     is_pro=excluded.is_pro, product_id=excluded.product_id,
-                     purchase_token_hash=excluded.purchase_token_hash,
-                     pro_until=excluded.pro_until, verified_at=now(), updated_at=now()""",
-                (
-                    account.user_id,
-                    active,
-                    self.settings.play_product_id,
-                    token_hash,
-                    expires_at,
-                ),
+            return await self._new_session(connection, row["user_id"], row["email"])
+
+    async def _new_session(
+        self, connection, user_id: str, email: str
+    ) -> AuthSessionResponse:
+        access = secrets.token_urlsafe(48)
+        refresh = secrets.token_urlsafe(64)
+        await connection.execute(
+            """INSERT INTO mobile_sessions
+               (id, user_id, access_token_hash, refresh_token_hash,
+                access_expires_at, refresh_expires_at)
+               VALUES (%s, %s, %s, %s, now() + interval '15 minutes',
+                       now() + interval '30 days')""",
+            (uuid4(), user_id, self._hash(access), self._hash(refresh)),
+        )
+        return AuthSessionResponse(
+            access_token=access,
+            refresh_token=refresh,
+            user_id=user_id,
+            email=email,
+        )
+
+    async def refresh_session(self, refresh_token: str) -> AuthSessionResponse | None:
+        access = secrets.token_urlsafe(48)
+        refreshed = secrets.token_urlsafe(64)
+        async with self.transaction() as connection:
+            row = await (
+                await connection.execute(
+                    """SELECT s.id, s.user_id, a.email FROM mobile_sessions s
+                       JOIN app_accounts a ON a.user_id=s.user_id
+                       WHERE s.refresh_token_hash=%s AND s.revoked_at IS NULL
+                         AND s.refresh_expires_at > now()
+                       FOR UPDATE""",
+                    (self._hash(refresh_token),),
+                )
+            ).fetchone()
+            if not row:
+                return None
+            await connection.execute(
+                """UPDATE mobile_sessions SET access_token_hash=%s,
+                   refresh_token_hash=%s, access_expires_at=now() + interval '15 minutes',
+                   refresh_expires_at=now() + interval '30 days', rotated_at=now()
+                   WHERE id=%s""",
+                (self._hash(access), self._hash(refreshed), row["id"]),
             )
-            connection.execute(
-                """INSERT INTO billing_events
-                   (event_id, user_id, event_type, purchase_token_hash, payload)
-                   VALUES (%s, %s, 'client_verification', %s, %s::jsonb)
-                   ON CONFLICT (event_id) DO NOTHING""",
-                (
-                    f"verify:{token_hash}:{int(datetime.now(timezone.utc).timestamp() // 3600)}",
-                    account.user_id,
-                    token_hash,
-                    json.dumps({**audit, "base_plan_id": base_plan_id}),
-                ),
+            return AuthSessionResponse(
+                access_token=access,
+                refresh_token=refreshed,
+                user_id=row["user_id"],
+                email=row["email"],
             )
+
+    async def account_for_access_token(self, token: str) -> Account | None:
+        async with self.pool.connection() as connection:
+            row = await (
+                await connection.execute(
+                    """SELECT s.user_id, a.email FROM mobile_sessions s
+                       JOIN app_accounts a ON a.user_id=s.user_id
+                       WHERE s.access_token_hash=%s AND s.revoked_at IS NULL
+                         AND s.access_expires_at > now()""",
+                    (self._hash(token),),
+                )
+            ).fetchone()
+            return Account(row["user_id"], row["email"]) if row else None
+
+    async def revoke_session(self, refresh_token: str) -> None:
+        async with self.transaction() as connection:
+            await connection.execute(
+                """UPDATE mobile_sessions SET revoked_at=now()
+                   WHERE refresh_token_hash=%s AND revoked_at IS NULL""",
+                (self._hash(refresh_token),),
+            )
+
+    async def stripe_customer_for(self, account: Account) -> str | None:
+        async with self.transaction() as connection:
+            await self._ensure_account(connection, account)
+            row = await (
+                await connection.execute(
+                    "SELECT stripe_customer_id FROM app_accounts WHERE user_id=%s",
+                    (account.user_id,),
+                )
+            ).fetchone()
+            return row["stripe_customer_id"]
+
+    async def bind_stripe_customer(self, account: Account, customer_id: str) -> None:
+        async with self.transaction() as connection:
+            await self._ensure_account(connection, account)
+            await connection.execute(
+                """UPDATE app_accounts SET stripe_customer_id=%s, updated_at=now()
+                   WHERE user_id=%s""",
+                (customer_id, account.user_id),
+            )
+
+    async def apply_stripe_event(
+        self,
+        *,
+        event_id: str,
+        event_type: str,
+        payload: dict,
+        customer_id: str | None,
+        subscription_id: str | None,
+        active: bool | None,
+        pro_until: datetime | None,
+    ) -> bool:
+        async with self.transaction() as connection:
+            inserted = await (
+                await connection.execute(
+                    """INSERT INTO billing_events (event_id, event_type, payload)
+                       VALUES (%s, %s, %s::jsonb)
+                       ON CONFLICT (event_id) DO NOTHING RETURNING event_id""",
+                    (event_id, event_type, json.dumps(payload)),
+                )
+            ).fetchone()
+            if not inserted:
+                return False
+            if customer_id and active is not None:
+                account = await (
+                    await connection.execute(
+                        "SELECT user_id FROM app_accounts WHERE stripe_customer_id=%s",
+                        (customer_id,),
+                    )
+                ).fetchone()
+                if account:
+                    await connection.execute(
+                        """INSERT INTO entitlements
+                           (user_id, is_pro, stripe_subscription_id, pro_until,
+                            verified_at, updated_at)
+                           VALUES (%s, %s, %s, %s, now(), now())
+                           ON CONFLICT (user_id) DO UPDATE SET
+                             is_pro=excluded.is_pro,
+                             stripe_subscription_id=excluded.stripe_subscription_id,
+                             pro_until=excluded.pro_until,
+                             verified_at=now(), updated_at=now()""",
+                        (
+                            account["user_id"],
+                            active,
+                            subscription_id,
+                            pro_until,
+                        ),
+                    )
+                    await connection.execute(
+                        "UPDATE billing_events SET user_id=%s WHERE event_id=%s",
+                        (account["user_id"], event_id),
+                    )
+            return True

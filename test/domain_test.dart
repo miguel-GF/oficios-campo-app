@@ -106,7 +106,7 @@ void main() {
   });
   test('calcula periodo, cuota, folios e importes', () {
     expect(quotaPeriod(DateTime(2026, 1, 15)), '2026-01');
-    expect(usageSummary(2, '2026-01').remaining, 2);
+    expect(usageSummary(2, '2026-01').used, 2);
     expect(formatFolio('COT', 42), 'COT-000042');
     expect(parseMoneyToCents(r'$ 1,250'), 125000);
     expect(parseMoneyToCents('1.250,50'), 125050);

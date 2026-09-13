@@ -1,14 +1,7 @@
 import 'dart:math' as math;
 
-// Seven documents per month keeps the free flow useful without removing the
-// reason to upgrade for professionals with regular weekly work.
-const firstPeriodManualQuotes = 3;
-const freeManualQuotesPerMonth = 4;
 const freeAiQuotesPerMonth = 2;
 const guestAiQuotes = 1;
-const signupBonusAiQuotes = 2;
-// Kept as a compatibility alias while receipt quota is moved to the backend.
-const freeDocumentsPerMonth = freeManualQuotesPerMonth;
 const defaultBrandColor = '#0E5E4A';
 
 String normalizeBrandColor(String? value) {
@@ -346,14 +339,9 @@ class QuoteSummary {
 }
 
 class UsageSummary {
-  const UsageSummary({
-    required this.period,
-    required this.used,
-    required this.limit,
-    required this.remaining,
-  });
+  const UsageSummary({required this.period, required this.used});
   final String period;
-  final int used, limit, remaining;
+  final int used;
 }
 
 enum DashboardRange { week, month }
@@ -467,16 +455,8 @@ String quotaPeriod([DateTime? date]) {
   return '${value.year}-${value.month.toString().padLeft(2, '0')}';
 }
 
-UsageSummary usageSummary(
-  int used, [
-  String? period,
-  int limit = freeDocumentsPerMonth,
-]) => UsageSummary(
-  period: period ?? quotaPeriod(),
-  used: used,
-  limit: limit,
-  remaining: math.max(0, limit - used),
-);
+UsageSummary usageSummary(int used, [String? period]) =>
+    UsageSummary(period: period ?? quotaPeriod(), used: used);
 
 String? validateQuoteForFinalization({
   required String clientName,

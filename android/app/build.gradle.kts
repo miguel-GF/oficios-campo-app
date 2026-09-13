@@ -28,6 +28,20 @@ android {
         versionName = flutter.versionName
     }
 
+    flavorDimensions += "distribution"
+    productFlavors {
+        create("direct") {
+            dimension = "distribution"
+            applicationId = "mx.jale.app"
+            manifestPlaceholders["appLabel"] = "Jale"
+        }
+        create("play") {
+            dimension = "distribution"
+            applicationId = "mx.jale.app.play"
+            manifestPlaceholders["appLabel"] = "Jale"
+        }
+    }
+
     val signingPropertiesFile = rootProject.file("key.properties")
     val signingProperties = Properties()
     if (signingPropertiesFile.exists()) {

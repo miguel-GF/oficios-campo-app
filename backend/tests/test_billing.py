@@ -1,50 +1,41 @@
 from datetime import datetime, timezone
-import base64
-import hashlib
 
-from app.billing import subscription_verdict
-from app.config import Settings
+from app.billing import subscription_change
 
 
-NOW = datetime(2026, 9, 3, tzinfo=timezone.utc)
-
-
-def payload(*, account="user-1", state="SUBSCRIPTION_STATE_ACTIVE", expiry="2026-10-03T00:00:00Z"):
-    account = base64.urlsafe_b64encode(hashlib.sha256(account.encode()).digest()).decode().rstrip("=")
+def event(status="active", event_type="customer.subscription.updated"):
     return {
-        "externalAccountIdentifiers": {"obfuscatedExternalAccountId": account},
-        "subscriptionState": state,
-        "lineItems": [
-            {
-                "productId": "jale_pro",
-                "expiryTime": expiry,
-                "offerDetails": {"basePlanId": "mensual"},
+        "id": "evt_1",
+        "type": event_type,
+        "data": {
+            "object": {
+                "id": "sub_1",
+                "customer": "cus_1",
+                "status": status,
+                "current_period_end": 1790985600,
             }
-        ],
+        },
     }
 
 
-def test_active_purchase_is_bound_to_the_jale_account():
-    active, _, plan, audit = subscription_verdict(
-        payload(), Settings(), "user-1", NOW
+def test_active_stripe_subscription_grants_pro_until_period_end():
+    customer, subscription, active, expiry = subscription_change(event())
+    assert (customer, subscription, active) == ("cus_1", "sub_1", True)
+    assert expiry == datetime.fromtimestamp(1790985600, tz=timezone.utc)
+
+
+def test_deleted_or_unpaid_subscription_revokes_pro():
+    assert subscription_change(event(status="unpaid"))[2] is False
+    assert subscription_change(event(status="trialing"))[2] is False
+    assert subscription_change(
+        event(status="canceled", event_type="customer.subscription.deleted")
+    )[2] is False
+
+
+def test_unrelated_webhook_does_not_change_entitlement():
+    assert subscription_change(event(event_type="invoice.paid")) == (
+        None,
+        None,
+        None,
+        None,
     )
-    assert active is True
-    assert plan == "mensual"
-    assert audit["account_bound"] is True
-
-
-def test_purchase_from_another_account_is_rejected():
-    active, expiry, plan, audit = subscription_verdict(
-        payload(account="attacker"), Settings(), "user-1", NOW
-    )
-    assert (active, expiry, plan) == (False, None, None)
-    assert audit["verification_status"] == "account_mismatch"
-
-
-def test_expired_or_on_hold_subscription_is_not_pro():
-    assert subscription_verdict(
-        payload(expiry="2026-08-01T00:00:00Z"), Settings(), "user-1", NOW
-    )[0] is False
-    assert subscription_verdict(
-        payload(state="SUBSCRIPTION_STATE_ON_HOLD"), Settings(), "user-1", NOW
-    )[0] is False

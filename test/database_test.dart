@@ -40,8 +40,8 @@ void main() {
     );
   }
 
-  test('la cuota gratis cuenta cotizaciones manuales, no las de IA', () async {
-    for (var index = 0; index < freeManualQuotesPerMonth + 2; index++) {
+  test('las cotizaciones manuales son ilimitadas', () async {
+    for (var index = 0; index < 6; index++) {
       await finalizeQuote(
         db,
         await completeDraft(client: 'Cliente $index'),
@@ -58,7 +58,7 @@ void main() {
       false,
     );
     expect(aiQuote?.origin, QuoteOrigin.ai);
-    expect((await getDocumentUsage(db)).used, freeManualQuotesPerMonth + 3);
+    expect((await getDocumentUsage(db)).used, 7);
   });
 
   test(
@@ -88,7 +88,7 @@ void main() {
       'Anticipo',
     );
 
-    for (var index = 1; index < freeManualQuotesPerMonth; index++) {
+    for (var index = 1; index < 4; index++) {
       await finalizeQuote(
         db,
         await completeDraft(client: 'Cliente $index'),

@@ -4,9 +4,15 @@ export default {
     const source = new URL(request.url);
     const allowedPaths = new Set([
       '/health',
+      '/v1/auth/exchange',
+      '/v1/auth/refresh',
+      '/v1/auth/logout',
       '/v1/account',
       '/v1/quotes/interpret',
-      '/v1/billing/google-play/verify',
+      '/v1/billing/plans',
+      '/v1/billing/checkout',
+      '/v1/billing/portal',
+      '/v1/billing/stripe/webhook',
     ]);
     if (!allowedPaths.has(source.pathname)) {
       return new Response('Not found', { status: 404 });

@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
 
-import 'ai.dart';
+import 'session.dart';
 
 class EmailRegistrationPage extends StatefulWidget {
   const EmailRegistrationPage({super.key});
@@ -11,155 +10,85 @@ class EmailRegistrationPage extends StatefulWidget {
 }
 
 class _EmailRegistrationPageState extends State<EmailRegistrationPage> {
-  final email = TextEditingController();
-  final code = TextEditingController();
-  bool codeSent = false, busy = false;
+  bool busy = false;
   String? error;
 
   @override
+  void initState() {
+    super.initState();
+    AuthService.instance.addListener(_authChanged);
+  }
+
+  @override
   void dispose() {
-    email.dispose();
-    code.dispose();
+    AuthService.instance.removeListener(_authChanged);
     super.dispose();
   }
 
-  Future<void> sendCode() async {
-    if (!AiApi.authConfigured) {
-      setState(() => error = 'El registro aún no está configurado.');
-      return;
-    }
-    final value = email.text.trim().toLowerCase();
-    if (!RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$').hasMatch(value)) {
-      setState(() => error = 'Escribe un correo válido.');
-      return;
-    }
-    setState(() {
-      busy = true;
-      error = null;
-    });
-    try {
-      await Supabase.instance.client.auth.signInWithOtp(
-        email: value,
-        shouldCreateUser: true,
-      );
-      if (mounted) {
-        setState(() {
-          codeSent = true;
-          busy = false;
-        });
-      }
-    } catch (_) {
-      if (mounted) {
-        setState(() {
-          busy = false;
-          error = 'No pudimos enviar el código.';
-        });
-      }
+  void _authChanged() {
+    if (mounted && AuthService.instance.signedIn) {
+      Navigator.of(context).pop(true);
     }
   }
 
-  Future<void> verifyCode() async {
-    final token = code.text.trim();
-    if (token.length < 6) {
-      setState(() => error = 'Escribe el código que llegó a tu correo.');
-      return;
-    }
+  Future<void> openLogin() async {
     setState(() {
       busy = true;
       error = null;
     });
     try {
-      await Supabase.instance.client.auth.verifyOTP(
-        type: OtpType.email,
-        email: email.text.trim().toLowerCase(),
-        token: token,
-      );
-      try {
-        await AiApi().syncAccount();
-      } catch (_) {
-        // Auth remains valid; the backend will initialize the account on use.
-      }
-      if (mounted) {
-        Navigator.pop(context, true);
-      }
+      await AuthService.instance.beginLogin();
     } catch (_) {
       if (mounted) {
-        setState(() {
-          busy = false;
-          error = 'El código no es válido o ya venció.';
-        });
+        setState(() => error = 'No pudimos abrir el acceso seguro.');
       }
+    } finally {
+      if (mounted) setState(() => busy = false);
     }
   }
 
   @override
   Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(title: const Text('Guarda tus créditos')),
+    appBar: AppBar(title: const Text('Cuenta de Jale')),
     body: ListView(
-      padding: const EdgeInsets.all(20),
+      padding: const EdgeInsets.all(24),
       children: [
         Icon(
-          Icons.mark_email_read_outlined,
-          size: 64,
+          Icons.shield_outlined,
+          size: 72,
           color: Theme.of(context).colorScheme.primary,
         ),
-        const SizedBox(height: 18),
-        Text(
-          codeSent ? 'Revisa tu correo' : 'Obtén 2 cotizaciones más con IA',
+        const SizedBox(height: 20),
+        const Text(
+          'Guarda tus créditos y tu plan Pro',
           textAlign: TextAlign.center,
-          style: const TextStyle(fontSize: 24, fontWeight: FontWeight.w900),
+          style: TextStyle(fontSize: 24, fontWeight: FontWeight.w900),
         ),
-        const SizedBox(height: 8),
-        Text(
-          codeSent
-              ? 'Escribe el código que enviamos. No necesitas recordar una contraseña.'
-              : 'Tu correo permite conservar tus créditos y recuperar Jale en otro teléfono.',
+        const SizedBox(height: 10),
+        const Text(
+          'Abriremos el acceso seguro de Jale. Al volver tendrás 2 cotizaciones con IA cada mes.',
           textAlign: TextAlign.center,
         ),
-        const SizedBox(height: 24),
-        TextField(
-          controller: email,
-          enabled: !codeSent && !busy,
-          keyboardType: TextInputType.emailAddress,
-          autocorrect: false,
-          decoration: const InputDecoration(labelText: 'Correo electrónico'),
-        ),
-        if (codeSent) ...[
-          const SizedBox(height: 12),
-          TextField(
-            controller: code,
-            enabled: !busy,
-            keyboardType: TextInputType.number,
-            autofillHints: const [AutofillHints.oneTimeCode],
-            decoration: const InputDecoration(labelText: 'Código de 6 dígitos'),
-          ),
-        ],
         if (error != null) ...[
-          const SizedBox(height: 12),
+          const SizedBox(height: 16),
           Text(
             error!,
+            textAlign: TextAlign.center,
             style: TextStyle(color: Theme.of(context).colorScheme.error),
           ),
         ],
-        const SizedBox(height: 20),
-        FilledButton(
-          onPressed: busy ? null : (codeSent ? verifyCode : sendCode),
-          child: Text(
-            busy
-                ? 'Espera…'
-                : (codeSent ? 'Confirmar código' : 'Enviar código'),
-          ),
+        const SizedBox(height: 24),
+        FilledButton.icon(
+          onPressed: busy ? null : openLogin,
+          icon: const Icon(Icons.open_in_browser),
+          label: Text(busy ? 'Abriendo…' : 'Continuar de forma segura'),
         ),
-        if (codeSent)
-          TextButton(
-            onPressed: busy
-                ? null
-                : () => setState(() {
-                    codeSent = false;
-                    code.clear();
-                  }),
-            child: const Text('Cambiar correo'),
-          ),
+        const SizedBox(height: 10),
+        const Text(
+          'Jale no recibe tu contraseña. La sesión se completa en el portal de Neon Auth.',
+          textAlign: TextAlign.center,
+          style: TextStyle(fontSize: 12),
+        ),
       ],
     ),
   );

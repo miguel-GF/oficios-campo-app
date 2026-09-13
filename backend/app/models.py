@@ -1,7 +1,8 @@
 import math
+from typing import Literal
+from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator
-from uuid import UUID
 
 
 class QuoteLineDraft(BaseModel):
@@ -45,8 +46,6 @@ class CreditState(BaseModel):
     authenticated: bool
     is_pro: bool
     ai_remaining: int | None
-    manual_remaining: int
-    signup_bonus_remaining: int
     period: str
 
 
@@ -56,12 +55,52 @@ class InterpretResponse(BaseModel):
     model: str
 
 
-class VerifyPurchaseRequest(BaseModel):
-    purchase_token: str = Field(min_length=20, max_length=4096)
-    product_id: str = Field(min_length=2, max_length=100)
+class AuthCodeRequest(BaseModel):
+    user_id: str = Field(min_length=1, max_length=255)
+    email: str = Field(default="", max_length=320)
+    code_challenge: str = Field(min_length=43, max_length=128)
+    redirect_uri: str = Field(min_length=8, max_length=512)
 
 
-class VerifyPurchaseResponse(BaseModel):
-    active: bool
-    expires_at: str | None
-    base_plan_id: str | None
+class AuthCodeResponse(BaseModel):
+    code: str
+    expires_in: int = 300
+
+
+class AuthExchangeRequest(BaseModel):
+    code: str = Field(min_length=32, max_length=512)
+    code_verifier: str = Field(min_length=43, max_length=128)
+    redirect_uri: str = Field(min_length=8, max_length=512)
+
+
+class AuthRefreshRequest(BaseModel):
+    refresh_token: str = Field(min_length=32, max_length=512)
+
+
+class AuthLogoutRequest(BaseModel):
+    refresh_token: str = Field(min_length=32, max_length=512)
+
+
+class AuthSessionResponse(BaseModel):
+    access_token: str
+    refresh_token: str
+    token_type: str = "Bearer"
+    expires_in: int = 900
+    user_id: str
+    email: str
+
+
+class BillingPlan(BaseModel):
+    id: Literal["monthly", "yearly"]
+    price_id: str
+    unit_amount: int
+    currency: str
+    interval: str
+
+
+class CheckoutRequest(BaseModel):
+    plan: Literal["monthly", "yearly"]
+
+
+class BillingSessionResponse(BaseModel):
+    url: str

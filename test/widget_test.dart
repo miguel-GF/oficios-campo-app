@@ -51,8 +51,8 @@ void main() {
 
   test('traduce errores técnicos a mensajes accionables', () {
     expect(
-      friendlyErrorMessage(Exception('FREE_LIMIT_REACHED')),
-      contains('cotizaciones manuales'),
+      friendlyErrorMessage(Exception('AI_LIMIT_REACHED')),
+      contains('cotizaciones con IA'),
     );
     expect(
       friendlyErrorMessage(Exception('RATE_LIMITED')),

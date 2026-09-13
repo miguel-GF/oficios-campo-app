@@ -8,7 +8,6 @@ import 'package:path/path.dart' as path;
 import 'package:path_provider/path_provider.dart';
 import 'package:printing/printing.dart';
 import 'package:sqflite/sqflite.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
 import 'backup.dart';
 import 'ai.dart';
 import 'ai_quote_page.dart';
@@ -17,6 +16,7 @@ import 'database.dart';
 import 'documents.dart';
 import 'domain.dart';
 import 'subscription.dart';
+import 'session.dart';
 import 'theme.dart';
 
 String quoteStatusLabel(QuoteStatus status) => switch (status) {
@@ -371,10 +371,7 @@ class _JaleAppState extends State<JaleApp> {
         getBusinessProfile(widget.db),
         listQuotes(widget.db),
         listClients(widget.db),
-        getDocumentUsage(
-          widget.db,
-          limit: widget.subscription.manualQuoteLimit,
-        ),
+        getDocumentUsage(widget.db),
       ]);
       if (!mounted) return;
       setState(() {
@@ -428,7 +425,6 @@ class _JaleAppState extends State<JaleApp> {
         profile: profile!,
         clients: clients,
         isPro: widget.subscription.isPro,
-        freeManualLimit: widget.subscription.manualQuoteLimit,
         close: () async {
           await _refresh();
           if (mounted) setState(() => quoteId = null);
@@ -472,11 +468,7 @@ class _JaleAppState extends State<JaleApp> {
       body: SafeArea(
         child: Column(
           children: [
-            AppHeader(
-              profile: profile!,
-              isPro: widget.subscription.isPro,
-              usage: usage!,
-            ),
+            AppHeader(profile: profile!, isPro: widget.subscription.isPro),
             Expanded(child: pages[tab]),
           ],
         ),
@@ -510,15 +502,9 @@ class Loading extends StatelessWidget {
 }
 
 class AppHeader extends StatelessWidget {
-  const AppHeader({
-    super.key,
-    required this.profile,
-    required this.isPro,
-    required this.usage,
-  });
+  const AppHeader({super.key, required this.profile, required this.isPro});
   final BusinessProfile profile;
   final bool isPro;
-  final UsageSummary usage;
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
@@ -1346,7 +1332,6 @@ class QuotePage extends StatefulWidget {
     required this.profile,
     required this.clients,
     required this.isPro,
-    required this.freeManualLimit,
     required this.close,
   });
   final Database db;
@@ -1354,7 +1339,6 @@ class QuotePage extends StatefulWidget {
   final BusinessProfile profile;
   final List<Client> clients;
   final bool isPro;
-  final int freeManualLimit;
   final Future<void> Function() close;
   @override
   State<QuotePage> createState() => _QuotePageState();
@@ -1457,12 +1441,7 @@ class _QuotePageState extends State<QuotePage> with WidgetsBindingObserver {
       timer?.cancel();
       await _writeQueue;
       final wasDraft = quote!.finalizedAt == null;
-      final value = await finalizeQuote(
-        widget.db,
-        quote!,
-        widget.isPro,
-        freeLimit: widget.freeManualLimit,
-      );
+      final value = await finalizeQuote(widget.db, quote!, widget.isPro);
       if (value == null) return;
       if (wasDraft) await markCatalogItemsUsed(widget.db, value.lines);
       if (!mounted) return;
@@ -3265,10 +3244,8 @@ class SettingsPage extends StatelessWidget {
       }
     }
 
-    User? signedInUser;
-    if (AiApi.authConfigured) {
-      signedInUser = Supabase.instance.client.auth.currentUser;
-    }
+    final signedIn = AuthService.instance.signedIn;
+    final signedInEmail = AuthService.instance.email;
 
     return ListView(
       padding: const EdgeInsets.all(16),
@@ -3338,23 +3315,21 @@ class SettingsPage extends StatelessWidget {
         Card(
           child: ListTile(
             leading: Icon(
-              signedInUser == null
+              !signedIn
                   ? Icons.person_add_alt_rounded
                   : Icons.verified_user_outlined,
             ),
-            title: Text(signedInUser?.email ?? 'Guardar mis créditos'),
+            title: Text(signedInEmail ?? 'Guardar mis créditos'),
             subtitle: Text(
-              signedInUser == null
+              !signedIn
                   ? 'Regístrate por correo para obtener 2 usos extra de IA.'
                   : 'Tu cuenta protege créditos y compras de Jale Pro.',
             ),
             trailing: Icon(
-              signedInUser == null
-                  ? Icons.arrow_forward_rounded
-                  : Icons.more_vert_rounded,
+              !signedIn ? Icons.arrow_forward_rounded : Icons.more_vert_rounded,
             ),
             onTap: () async {
-              if (signedInUser == null) {
+              if (!signedIn) {
                 await Navigator.of(context).push<bool>(
                   MaterialPageRoute(
                     builder: (_) => const EmailRegistrationPage(),
@@ -3367,7 +3342,7 @@ class SettingsPage extends StatelessWidget {
                 context: context,
                 builder: (dialog) => AlertDialog(
                   title: const Text('Cuenta de Jale'),
-                  content: Text(signedInUser!.email ?? ''),
+                  content: Text(signedInEmail ?? ''),
                   actions: [
                     TextButton(
                       onPressed: () => Navigator.pop(dialog, false),
@@ -3381,7 +3356,8 @@ class SettingsPage extends StatelessWidget {
                 ),
               );
               if (signOut == true) {
-                await Supabase.instance.client.auth.signOut();
+                await AuthService.instance.logout();
+                await subscription.refresh();
                 await refresh();
               }
             },
@@ -3398,7 +3374,11 @@ class SettingsPage extends StatelessWidget {
             onTap: isPro
                 ? () async {
                     try {
-                      await subscription.manage();
+                      if (subscription.canPurchase) {
+                        await subscription.manage();
+                      } else {
+                        await subscription.refresh();
+                      }
                     } catch (error) {
                       if (context.mounted) _message(context, error);
                     }
@@ -4107,39 +4087,51 @@ class _PaywallState extends State<Paywall> {
               text: 'PDF sin marca de Jale',
             ),
             const SizedBox(height: 22),
-            SegmentedButton<String>(
-              segments: [
-                ButtonSegment(
-                  value: 'monthly',
-                  label: Text('Mensual\n${price('monthly')}'),
-                ),
-                ButtonSegment(
-                  value: 'yearly',
-                  label: Text('Anual\n${price('yearly')}'),
-                ),
-              ],
-              selected: {selectedPlan},
-              showSelectedIcon: false,
-              onSelectionChanged: busy
-                  ? null
-                  : (value) => setState(() => selectedPlan = value.first),
-              style: ButtonStyle(
-                foregroundColor: WidgetStateProperty.resolveWith(
-                  (states) => states.contains(WidgetState.selected)
-                      ? Colors.black
-                      : Colors.white,
+            if (widget.subscription.canPurchase)
+              SegmentedButton<String>(
+                segments: [
+                  ButtonSegment(
+                    value: 'monthly',
+                    label: Text('Mensual\n${price('monthly')}'),
+                  ),
+                  ButtonSegment(
+                    value: 'yearly',
+                    label: Text('Anual\n${price('yearly')}'),
+                  ),
+                ],
+                selected: {selectedPlan},
+                showSelectedIcon: false,
+                onSelectionChanged: busy
+                    ? null
+                    : (value) => setState(() => selectedPlan = value.first),
+                style: ButtonStyle(
+                  foregroundColor: WidgetStateProperty.resolveWith(
+                    (states) => states.contains(WidgetState.selected)
+                        ? Colors.black
+                        : Colors.white,
+                  ),
                 ),
               ),
-            ),
             const SizedBox(height: 25),
-            FilledButton(
-              onPressed: busy ? null : buy,
-              child: Text(
-                busy
-                    ? 'Abriendo Google Play…'
-                    : 'Continuar con ${selectedPlan == 'yearly' ? 'Anual' : 'Mensual'}',
+            if (widget.subscription.canPurchase)
+              FilledButton(
+                onPressed: busy ? null : buy,
+                child: Text(
+                  busy
+                      ? 'Abriendo Stripe…'
+                      : 'Continuar con ${selectedPlan == 'yearly' ? 'Anual' : 'Mensual'}',
+                ),
               ),
-            ),
+            if (!widget.subscription.canPurchase)
+              const Card(
+                child: Padding(
+                  padding: EdgeInsets.all(16),
+                  child: Text(
+                    'Inicia sesión para usar aquí un plan Pro que ya esté activo.',
+                    textAlign: TextAlign.center,
+                  ),
+                ),
+              ),
             TextButton(
               onPressed: () async {
                 try {
@@ -4158,12 +4150,12 @@ class _PaywallState extends State<Paywall> {
                 }
               },
               child: const Text(
-                'Restaurar compra',
+                'Actualizar estado del plan',
                 style: TextStyle(color: Color(0xffffd18a)),
               ),
             ),
             const Text(
-              '*Sujeto a uso razonable para proteger el servicio. La renovación y cancelación se administran en Google Play.',
+              '*Sujeto a uso razonable para proteger el servicio. En la versión directa, Stripe administra la renovación y cancelación.',
               textAlign: TextAlign.center,
               style: TextStyle(color: Colors.white70, fontSize: 11),
             ),
@@ -4203,8 +4195,6 @@ class _ProBenefit extends StatelessWidget {
 String friendlyErrorMessage(Object error) {
   final raw = error.toString().replaceFirst('Exception: ', '').trim();
   return switch (raw) {
-    'FREE_LIMIT_REACHED' =>
-      'Ya usaste tus cotizaciones manuales gratuitas de este periodo.',
     'AI_LIMIT_REACHED' =>
       'Ya usaste tus cotizaciones con IA gratuitas de este periodo.',
     'EMAIL_REQUIRED' => 'Registra tu correo para continuar usando la IA.',

@@ -3,11 +3,9 @@ import 'dart:math';
 
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:http/http.dart' as http;
-import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'integrity.dart';
-
-const jaleApiUrl = String.fromEnvironment('JALE_API_URL');
+import 'session.dart';
 
 class AiQuoteLine {
   const AiQuoteLine({
@@ -44,16 +42,11 @@ class AiApi {
   final http.Client _client;
   static const _storage = FlutterSecureStorage();
   static const _installationKey = 'jale.installation.id.v1';
+  static const _pendingKey = 'jale.ai.pending.v1';
+  static const _responseKey = 'jale.ai.response.v1';
 
   static bool get isConfigured => jaleApiUrl.isNotEmpty;
-  static bool get authConfigured {
-    try {
-      Supabase.instance.client;
-      return true;
-    } catch (_) {
-      return false;
-    }
-  }
+  static bool get authConfigured => AuthService.instance.configured;
 
   static String _uuid() {
     final bytes = List<int>.generate(16, (_) => Random.secure().nextInt(256));
@@ -65,7 +58,7 @@ class AiApi {
     return '${hex.substring(0, 8)}-${hex.substring(8, 12)}-${hex.substring(12, 16)}-${hex.substring(16, 20)}-${hex.substring(20)}';
   }
 
-  Future<String> _installationId() async {
+  static Future<String> installationId() async {
     final current = await _storage.read(key: _installationKey);
     if (current != null && current.length >= 20) return current;
     final created = '${_uuid()}-${_uuid()}';
@@ -83,29 +76,66 @@ class AiApi {
         'La IA aún no está conectada en esta compilación.',
       );
     }
-    final installationId = await _installationId();
-    final idempotencyKey = _uuid();
-    final body = jsonEncode({
+    final installationId = await AiApi.installationId();
+    final fingerprint = base64UrlEncode(
+      utf8.encode('$transcript\u0000$trade\u0000$clientHint'),
+    );
+    final cachedRaw = await _storage.read(key: _responseKey);
+    if (cachedRaw != null) {
+      try {
+        final cached = Map<String, dynamic>.from(jsonDecode(cachedRaw) as Map);
+        if (cached['fingerprint'] == fingerprint) {
+          await _storage.delete(key: _responseKey);
+          return aiQuoteDraftFromJson(
+            Map<String, dynamic>.from(cached['quote'] as Map),
+          );
+        }
+      } catch (_) {
+        await _storage.delete(key: _responseKey);
+      }
+    }
+    var idempotencyKey = _uuid();
+    final request = <String, dynamic>{
       'transcript': transcript,
       'trade': trade,
       'client_hint': clientHint,
       'installation_id': installationId,
       'request_id': idempotencyKey,
-    });
+    };
+    final pendingRaw = await _storage.read(key: _pendingKey);
+    if (pendingRaw != null) {
+      try {
+        final pending = Map<String, dynamic>.from(
+          jsonDecode(pendingRaw) as Map,
+        );
+        if (pending['fingerprint'] == fingerprint &&
+            pending['request'] is Map) {
+          request
+            ..clear()
+            ..addAll(Map<String, dynamic>.from(pending['request'] as Map));
+          idempotencyKey = request['request_id'] as String;
+        }
+      } catch (_) {
+        await _storage.delete(key: _pendingKey);
+      }
+    }
+    await _storage.write(
+      key: _pendingKey,
+      value: jsonEncode({'fingerprint': fingerprint, 'request': request}),
+    );
+    final body = jsonEncode(request);
     final proof = await PlayIntegrityService.instance.proofForBody(body);
     final headers = <String, String>{
       'Content-Type': 'application/json',
       'X-Installation-ID': installationId,
       'Idempotency-Key': idempotencyKey,
+      'X-Jale-Distribution': jaleDistribution,
     };
     if (proof != null) {
       headers['X-Play-Integrity'] = proof.token;
       headers['X-Request-Hash'] = proof.requestHash;
     }
-    if (authConfigured) {
-      final token = Supabase.instance.client.auth.currentSession?.accessToken;
-      if (token != null) headers['Authorization'] = 'Bearer $token';
-    }
+    headers.addAll(await AuthService.instance.authorizedHeaders());
     final response = await _client
         .post(
           Uri.parse(
@@ -123,9 +153,13 @@ class AiApi {
     }
     final detail = payload['detail'];
     if (response.statusCode == 401 && detail == 'EMAIL_REQUIRED') {
+      await _storage.delete(key: _pendingKey);
       throw AiEmailRequired();
     }
     if (response.statusCode < 200 || response.statusCode >= 300) {
+      if (!(response.statusCode == 409 && detail == 'REQUEST_IN_PROGRESS')) {
+        await _storage.delete(key: _pendingKey);
+      }
       throw AiApiException(switch (detail) {
         'AI_LIMIT_REACHED' => 'Ya usaste tus cotizaciones con IA de este mes.',
         'RATE_LIMITED' =>
@@ -148,18 +182,24 @@ class AiApi {
       );
     }
     final quote = Map<String, dynamic>.from(rawQuote);
+    await _storage.write(
+      key: _responseKey,
+      value: jsonEncode({'fingerprint': fingerprint, 'quote': quote}),
+    );
+    await _storage.delete(key: _pendingKey);
+    await _storage.delete(key: _responseKey);
     return aiQuoteDraftFromJson(quote);
   }
 
   Future<void> syncAccount() async {
-    if (!isConfigured || !authConfigured) return;
-    final token = Supabase.instance.client.auth.currentSession?.accessToken;
+    if (!isConfigured || !AuthService.instance.signedIn) return;
+    final token = await AuthService.instance.accessToken();
     if (token == null) return;
     await _client
         .get(
           Uri.parse('${jaleApiUrl.replaceFirst(RegExp(r'/$'), '')}/v1/account'),
           headers: {
-            'X-Installation-ID': await _installationId(),
+            'X-Installation-ID': await installationId(),
             'Authorization': 'Bearer $token',
           },
         )

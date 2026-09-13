@@ -545,11 +545,7 @@ Future<List<QuoteSummary>> listQuotes(Database db, [String query = '']) async {
   }).toList();
 }
 
-Future<UsageSummary> getDocumentUsage(
-  Database db, {
-  String? period,
-  int limit = freeManualQuotesPerMonth,
-}) async {
+Future<UsageSummary> getDocumentUsage(Database db, {String? period}) async {
   final value = period ?? quotaPeriod();
   final quotes =
       Sqflite.firstIntValue(
@@ -559,15 +555,10 @@ Future<UsageSummary> getDocumentUsage(
         ),
       ) ??
       0;
-  return usageSummary(quotes, value, limit);
+  return usageSummary(quotes, value);
 }
 
-Future<Quote?> finalizeQuote(
-  Database db,
-  Quote quote,
-  bool _, {
-  int freeLimit = freeManualQuotesPerMonth,
-}) async {
+Future<Quote?> finalizeQuote(Database db, Quote quote, bool _) async {
   final validation = validateQuoteForFinalization(
     clientName: quote.clientName,
     lines: quote.lines,
@@ -806,11 +797,7 @@ Future<void> importSnapshot(Database db, BackupSnapshot snapshot) async {
           'name': profile.name,
           'trade': profile.trade,
           'phone': profile.phone,
-          'logo_uri':
-              restoredLogoPath ??
-              (profile.logoUri != null && File(profile.logoUri!).existsSync()
-                  ? profile.logoUri
-                  : null),
+          'logo_uri': restoredLogoPath,
           'icon_key': profile.iconKey,
           'brand_color': profile.brandColor,
           'created_at': profile.createdAt,
